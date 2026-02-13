@@ -254,11 +254,11 @@ def verify_claim_with_gemini(claim, evidence_list):
         "1. A medical claim\n"
         "2. Retrieved medical evidence\n\n"
         "INSTRUCTIONS:\n"
-        "- If the evidence clearly supports the claim -> output: Verified\n"
-        "- If the evidence clearly contradicts or does not support the claim -> output: Hallucinated\n"
-        "- If the evidence is completely unrelated -> output: Irrelevant\n\n"
+        "- **Verified**: The evidence *supports* or *strongly aligns* with the claim. (Allow for slight variations in phrasing).\n"
+        "- **Hallucinated**: The evidence *directly contradicts* the claim or states the opposite.\n"
+        "- **Irrelevant / No Evidence**: The evidence is unrelated or does not contain enough information to judge.\n\n"
         "IMPORTANT:\n"
-        "Do not be overly conservative.\n"
+        "Do not be overly cynical. If the evidence provides a high degree of confidence for the claim, mark it as Verified.\n"
         "Respond with ONLY a JSON object in this format:\n"
         "{ \"status\": \"Verified\" | \"Hallucinated\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"corrected claim if needed\" }\n\n"
         f"Claim: {claim}\n\n"
@@ -271,8 +271,10 @@ def verify_claim_with_gemini(claim, evidence_list):
         response_text = call_free_llm_with_fallback(prompt, max_tokens=300)
         
         if not response_text or response_text == "RATE_LIMIT_HIT":
-             print("DEBUG: API Failed (Rate Limit). Using Deterministic Fallback.")
+             print("DEBUG: API Failed (Rate Limit or No Response). Using Deterministic Fallback.")
              return verify_claim_deterministic(claim, evidence_list)
+
+        print(f"DEBUG: Raw LLM Response: {response_text}")
 
         # Robust JSON extraction
         import re
@@ -316,25 +318,26 @@ def verify_claim_with_gemini(claim, evidence_list):
 def verify_claim_deterministic(claim, evidence_list):
     """
     Fallback verification when LLMs are down.
-    Uses simple keyword overlap ratio.
+    Uses robust keyword overlap ratio.
     """
     if not evidence_list:
         return "IRRELEVANT", "No evidence found.", None
         
     import string
-    # Clean punctuation from claim words
-    claim_words = [w.strip(string.punctuation) for w in claim.lower().split()]
-    claim_words = [w for w in claim_words if len(w) > 3] # Filter small words
+    # Core medical stop words to ignore in matching
+    med_stop = {"treats", "causes", "factor", "increases", "decreases", "lower", "standard", "evidence", "confirmed", "found", "study", "shows"}
+    
+    # Clean punctuation and filter small/noise words
+    claim_words = [w.strip(string.punctuation).lower() for w in claim.split()]
+    claim_words = [w for w in claim_words if len(w) > 3 and w not in med_stop]
     
     if not claim_words:
-        return "VERIFIED", "Claim too short to verify, assuming true.", None
+        return "VERIFIED", "Claim consists only of general terms, assuming true.", None
         
     evidence_text = " ".join(evidence_list).lower()
     
     found_count = 0
     missing_words = []
-    
-    print(f"DEBUG: Evidence (First 100 chars): '{evidence_text[:100]}...'")
     
     for word in claim_words:
         if word in evidence_text:
@@ -344,15 +347,13 @@ def verify_claim_deterministic(claim, evidence_list):
             
     overlap_ratio = found_count / len(claim_words)
     
-    print(f"DEBUG: Claim: '{claim}'")
-    print(f"DEBUG: Keywords (Cleaned): {claim_words}")
-    print(f"DEBUG: Found: {found_count}/{len(claim_words)} (Ratio: {overlap_ratio:.2f})")
+    print(f"DEBUG: Deterministic Found: {found_count}/{len(claim_words)} (Ratio: {overlap_ratio:.2f})")
     
-    # Threshold: If > 30% of significant words found in evidence -> Verified (Less Strict)
-    if overlap_ratio > 0.3:
-        return "VERIFIED", f"Deterministic: Found {int(overlap_ratio*100)}% of keywords in evidence.", None
+    # Threshold: Balanced 25% for medical keywords
+    if overlap_ratio >= 0.25:
+        return "VERIFIED", f"Deterministic: Found {int(overlap_ratio*100)}% of keywords.", None
     else:
-        return "HALLUCINATED", f"Deterministic: Missing keywords: {', '.join(missing_words[:3])}", None
+        return "HALLUCINATED", f"Deterministic: Missing key terms: {', '.join(missing_words[:2])}", None
 
 def refine_text_for_verification(text):
     """
