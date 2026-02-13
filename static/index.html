@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedHallu | Advanced Medical Verification</title>
+
+    <!-- Google Fonts: Inter (UI) & Merriweather (Content) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Merriweather:ital,wght@0,400;0,700;1,400&display=swap"
+        rel="stylesheet">
+
+    <!-- Font Awesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+
+    <div class="app-container">
+        <!-- HEADER -->
+        <header>
+            <div class="logo-container">
+                <i class="fa-solid fa-staff-snake logo-icon"></i>
+                <h1 class="app-title">MedHallu Verifier</h1>
+            </div>
+            <p class="subtitle">Next-Generation AI Hallucination Dection & Correction System</p>
+        </header>
+
+        <main>
+            <!-- INPUT SECTION -->
+            <section class="card fade-in">
+                <!-- TAB NAVIGATION -->
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="switchTab('generate')">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> Ask & Verify
+                    </button>
+                    <button class="tab-btn" onclick="switchTab('verify')">
+                        <i class="fa-solid fa-file-shield"></i> Verify Text
+                    </button>
+                </div>
+
+                <form id="verifyForm">
+                    <input type="hidden" id="modeInput" name="mode" value="generate">
+
+                    <!-- QUESTION INPUT (Shared but focus changes) -->
+                    <div class="form-group" id="questionGroup">
+                        <label for="question" id="questionLabel"><i class="fa-regular fa-circle-question"></i> Medical
+                            Question</label>
+                        <textarea id="question" name="question" rows="2"
+                            placeholder="e.g., Is metformin effective for weight loss in non-diabetics?"
+                            required></textarea> <!-- Required by default for Mode 1 -->
+                    </div>
+
+                    <!-- ANSWER INPUT (Mode 2 Only - now Context for Mode 1) -->
+                    <div class="form-group hidden" id="answerGroup">
+                        <label for="ai_answer" id="answerLabel"><i class="fa-solid fa-robot"></i> Enter Text to
+                            Verify</label>
+                        <textarea id="ai_answer" name="ai_answer" rows="6"
+                            placeholder="Paste the text or LLM response here for verification..."></textarea>
+                    </div>
+
+                    <button type="submit" id="submitBtn" class="btn-primary">
+                        <span class="btn-text">Generate & Verify</span>
+                        <div class="spinner hidden"></div>
+                    </button>
+
+                    <!-- Progress Text -->
+                    <div id="loadingStatus" class="hidden"
+                        style="text-align: center; margin-top: 1rem; color: var(--secondary); font-size: 0.9rem;">
+                        <i class="fa-solid fa-spinner fa-spin"></i> <span id="loadingText">Processing...</span>
+                    </div>
+                </form>
+
+            </section>
+
+            <!-- Refinement / Preview Section (Hidden Initially) -->
+            <section id="refinementSection" class="card fade-in hidden"
+                style="border-top: 4px solid var(--primary-500);">
+                <h3 id="refinementTitle" style="color: var(--primary-700); margin-bottom: 0.5rem;">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> Review & Refine
+                </h3>
+                <p class="subtitle" id="refinementSubtitle">Please review the AI-refined text before final verification.
+                </p>
+
+                <div class="form-group">
+                    <label for="refinedInput" id="refinedLabel"><i class="fa-solid fa-pen-to-square"></i> Refined
+                        Content</label>
+                    <textarea id="refinedInput" rows="6" readonly
+                        style="background-color: #f8fafc; border-color: #cbd5e1; cursor: not-allowed;"></textarea>
+                </div>
+
+                <div class="button-group" style="display: flex; gap: 1rem;">
+                    <button type="button" id="finalVerifyBtn" class="btn-primary" style="background-color: #059669;">
+                        <span class="btn-text">Double Check & Verify</span>
+                        <div class="spinner hidden"></div>
+                    </button>
+                    <button type="button" id="cancelBtn" class="btn-secondary" onclick="resetUI()">
+                        Cancel
+                    </button>
+                </div>
+            </section>
+
+            <!-- RESULTS SECTION -->
+            <section id="resultSection" class="hidden fade-in">
+
+                <!-- Verdict Banner -->
+                <div id="verdictBanner" class="verdict-banner verdict-safe">
+                    <i class="fa-solid fa-check-circle"></i> Verdict: SAFE (No Hallucinations)
+                </div>
+
+                <!-- Stats Dashboard -->
+                <div class="stats-dashboard">
+                    <div class="stat-card">
+                        <span class="stat-label">Total Claims</span>
+                        <div class="stat-value total" id="totalClaims">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Verified</span>
+                        <div class="stat-value verified" id="verifiedCount">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Hallucinations</span>
+                        <div class="stat-value hallucinated" id="hallucinatedCount">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">No Evidence</span>
+                        <div class="stat-value missing" id="missingCount">0</div>
+                    </div>
+                </div>
+
+                <!-- Analysis Section (Hidden - Logic Disabled) -->
+
+                <div id="analysisSection" class="analysis-container hidden">
+                    <h3><i class="fa-solid fa-chart-line"></i> Project Impact Analysis</h3>
+
+                    <div class="analysis-content">
+                        <div class="table-responsive">
+                            <table class="analysis-table">
+                                <thead>
+                                    <tr>
+                                        <th>Metric</th>
+                                        <th>Baseline (Before)</th>
+                                        <th>MedHallu (After)</th>
+                                        <th>Improvement</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><strong>Accuracy</strong></td>
+                                        <td id="beforeAcc">-</td>
+                                        <td id="afterAcc">-</td>
+                                        <td id="impAcc">-</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Hallucination Rate</strong></td>
+                                        <td id="beforeHall">-</td>
+                                        <td id="afterHall">-</td>
+                                        <td id="impHall">-</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="report-box"
+                            style="margin-top: 1.5rem; padding: 1rem; background: var(--slate-50); border-radius: var(--radius-md); border-left: 4px solid var(--primary-500);">
+                            <strong
+                                style="display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--slate-900);">
+                                <i class="fa-solid fa-file-invoice"></i> Automated Project Report
+                            </strong>
+                            <p id="analysisReportText"
+                                style="font-size: 0.95rem; line-height: 1.6; color: var(--slate-700);"></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Correction Banner -->
+                <div id="correctedContainer" class="correction-banner hidden">
+                    <h3><i class="fa-solid fa-wand-magic-sparkles"></i> AI Corrected Answer</h3>
+                    <p id="finalAnswerText"></p>
+                </div>
+
+                <!-- Detailed Claims List -->
+                <div class="claims-section">
+                    <h2><i class="fa-solid fa-list-check"></i> Verification Results</h2>
+                    <p style="font-size: 0.9rem; color: #6b7280; margin-bottom: 1rem;">Individual claim-level analysis
+                        and evidence verification.</p>
+                    <div id="claimsList">
+                        <!-- Claim Cards Injected Here -->
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>&copy; 2026 MedHallu Project | Powered by OpenRouter & PubMed</p>
+        </footer>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='script.js') }}?v=5"></script>
+
+</body>
+
+</html>

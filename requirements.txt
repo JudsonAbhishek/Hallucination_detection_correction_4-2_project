@@ -1,0 +1,10 @@
+flask
+gunicorn
+torch
+transformers
+nltk
+requests
+datasets
+sentencepiece
+numpy
+python-dotenv
