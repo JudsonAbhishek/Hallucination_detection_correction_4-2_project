@@ -141,9 +141,12 @@ def main():
 
     fig, ax = plt.subplots(figsize=(12, 7), dpi=150)
 
-    # Use a professional color palette
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
-
+    # Use a modern, light color palette
+    # colors = ['#A0C4FF', '#B9FBC0', '#FFCFD2', '#F1C0E8'] # Light Blue, Light Green, Light Red/Pink, Light Purple
+    colors = ['#1F77B4',  # Blue - Accuracy
+          '#FF7F0E',  # Orange - Precision
+          '#2CA02C',  # Green - Recall
+          '#9467BD']  # Purple - F1-Score
     for i, metric in enumerate(metrics):
         offset = width * multiplier
         values = [results[model][metric] for model in models]
