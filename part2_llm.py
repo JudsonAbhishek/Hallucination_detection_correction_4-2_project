@@ -7,26 +7,69 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configuration for Expert LLMs (Switched to FREE models due to credit limit)
-expert_models = {
-    "fever_expert": "stepfun/step-3.5-flash:free",
-    "symptom_expert": "arcee-ai/trinity-large-preview:free",
-    "disease_expert": "stepfun/step-3.5-flash:free",
-    "diagnosis_expert": "openrouter/aurora-alpha",
-    "drug_expert": "arcee-ai/trinity-large-preview:free",
-    "lab_expert": "stepfun/step-3.5-flash:free",
-    "risk_expert": "openrouter/aurora-alpha"
-}
+# --- PROMPTS ---
 
-expert_prompts = {
-    "fever_expert": "Verify fever-related claims using WHO & CDC.",
-    "symptom_expert": "Verify symptom-related claims using PubMed & Medline.",
-    "disease_expert": "Verify disease mapping using Mayo Clinic & PubMed.",
-    "diagnosis_expert": "Verify diagnosis logic using clinical rules.",
-    "drug_expert": "Verify treatment using FDA & DrugBank.",
-    "lab_expert": "Verify lab interpretations using NIH references.",
-    "risk_expert": "Verify risk & red flags using NICE guidelines."
-}
+
+# --- PROMPTS ---
+
+PROMPT_MODE_1_QA = (
+    "You are a medical AI assistant. The user wants to verify a question.\n"
+    "1. REFINE the user's question to be precise and professional.\n"
+    "2. GENERATE a comprehensive, fact-based answer to the refined question.\n"
+    "{context_str}"
+    "3. RULES:\n"
+    "   - DO NOT include conversational filler like 'Okay', 'Here is the answer', etc.\n"
+    "   - The ANSWER must be the direct medical answer.\n"
+    "   - NO markdown formatting in the answer (plain text preferred).\n"
+    "   - **NO PRONOUNS**: You must NOT use pronouns like 'It', 'They', 'He', 'She', 'These'. Always repeat the noun (e.g., say 'The vaccine' instead of 'It').\n"
+    "   - **SIMPLE TERMS**: Use simple, clear language understandable by a layperson.\n"
+    "   - **NO HEDGING/ADVICE**: DO NOT use words like 'suggest', 'recommend', 'mostly', 'I guess', 'probably'. State facts directly.\n"
+    "   - **STRUCTURE**: The answer must be exactly ONE PARAGRAPH.\n"
+    "4. FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
+    "USER_INPUT: {question}\n\n"
+    "REFINED_QUESTION: [The refined question here]\n"
+    "ANSWER: [The generated answer here]\n"
+)
+
+PROMPT_MODE_2_REFINE = (
+    "You are an expert medical editor. Your task is to semantically refine the following text for clarity and correctness "
+    "before it is sent for fact-checking. \n"
+    "1. Correct any spelling or grammatical errors.\n"
+    "2. **RESOLVE PRONOUNS**: Replace vague pronouns (It, They, He, She, This) with the specific medical noun they refer to.\n"
+    "   - Example: 'Ginger is a root. It treats nausea.' -> 'Ginger is a root. Ginger treats nausea.'\n"
+    "3. **DO NOT FACT-CHECK**: Preserve the original meaning and claims, even if they are medically incorrect. We only want to fix the language structure.\n"
+    "4. Ensure medical terms are used correctly contextually, but do not change the assertion.\n"
+    "5. DO NOT include conversational filler like 'Okay', 'Here is the refined text', etc.\n"
+    "6. FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
+    "USER_TEXT: {text}\n\n"
+    "REFINED_TEXT: [The refined text here]\n"
+)
+
+PROMPT_MODE_3_VERIFY = (
+    "You are a medical fact verification system.\n\n"
+    "Given:\n"
+    "1. A medical claim\n"
+    "2. Retrieved medical evidence (may be imperfect or partial)\n\n"
+    "INSTRUCTIONS:\n"
+    "Your goal is to determine if the claim is FACTUALLY TRUE based on the evidence + your own medical knowledge.\n\n"
+    "- **VERIFIED**: \n"
+    "   - The evidence *supports* the claim (semantically or contextually).\n"
+    "   - OR the claim is a **NEGATIVE FACT** (e.g., 'X does not cure Y') and the evidence shows no proof of a cure.\n"
+    "   - OR the claim is **STANDARD MEDICAL CONSENSUS** (e.g., 'Smoking causes cancer', 'Consult a doctor') even if the specific retrieved snippets are weak.\n"
+    "- **HALLUCINATED**: \n"
+    "   - The evidence *contradicts* the claim.\n"
+    "   - OR the claim is scientifically implausible / false.\n"
+    "   - OR the claim makes a specific, non-consensus assertion (e.g., 'Drug X cures Cancer') that is NOT supported by the evidence.\n"
+    "- **IRRELEVANT**: The claim is not medical or is subjective opinion.\n\n"
+    "IMPORTANT:\n"
+    "1. **PRIORITIZE TRUTH**: If the claim is medically true (e.g., 'Fasting isn't a cure for diabetes'), mark it VERIFIED, even if the evidence text doesn't say the exact words 'not a cure'.\n"
+    "2. **CORRECTION STRATEGY**: If Hallucinated, provide a DIRECT FACTUAL CORRECTION.\n"
+    "   - State the correction authoritatively (e.g., 'No evidence supports X; standard care is Y').\n\n"
+    "Respond with ONLY a JSON object in this format:\n"
+    "{{ \"status\": \"Verified\" | \"Hallucinated\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"(Optional) correction if Hallucinated\" }}\n\n"
+    "Claim: {claim}\n\n"
+    "Evidence: {evidence_text}\n"
+)
 
 def call_llm(model, prompt, max_tokens=200):
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -45,7 +88,7 @@ def call_llm(model, prompt, max_tokens=200):
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
-        "max_tokens": max_tokens  # Configurable limit
+        "max_tokens": max_tokens
     }
 
     # 2s Rate Limiting backoff for Free Tier (Safety)
@@ -178,35 +221,84 @@ def classify_and_rewrite_query(claim):
         "mesh": []
     }
 
+import concurrent.futures
+
 def fetch_expert_evidence(claim):
     """
-    CONSOLIDATED EXPERT: Reducse API calls from 4 to 1 per claim.
+    COUNCIL OF EXPERTS: Calls multiple specialized LLMs in parallel to verify the claim.
     """
-    print(f"DEBUG: Fetching evidence from Super Medical Expert for: {claim[:50]}...")
+    print(f"DEBUG: Convening the Council of Experts for: '{claim[:50]}...'")
     
-    # Use the primary working model for the expert knowledge
-    model = expert_models.get("disease_expert", "stepfun/step-3.5-flash:free")
+    # Define the 7 Experts with specific Models and Prompts
+    # Using reliable free models: Stepfun (Fast), Trinity (Reasoning), Gemma (General)
+    expert_registry = {
+        "Generalist": {
+            "model": "stepfun/step-3.5-flash:free",  # FAST & General
+            "prompt": "Verify this claim using standard medical consensus (WHO/CDC). Ensure evidence is grounded in reputable medical guidelines."
+        },
+        "Pharmacologist": {
+            "model": "arcee-ai/trinity-large-preview:free", # REASONING Specialized
+            "prompt": "Focus on drug mechanisms, pharmacokinetics, interactions, side effects, and dosage. Cite grounded sources like DrugBank, FDA labels, or major pharmacopoeias."
+        },
+        "Symptom Expert": {
+            "model": "stepfun/step-3.5-flash:free", # FAST for pattern matching
+            "prompt": "Focus on clinical presentation, signs, symptoms, and differential diagnosis. Base your answer on grounded clinical texts like Harrison's or UpToDate."
+        },
+        "Diagnostic Expert": {
+            "model": "google/gemma-3-27b-it:free", # COMPLEX Logic
+            "prompt": "Focus on diagnostic criteria, lab reference ranges, imaging findings, and biomarkers. Use grounded references from ACR, radiological societies, or lab manuals."
+        },
+        "Treatment Expert": {
+            "model": "arcee-ai/trinity-large-preview:free", # REASONING Specialized
+            "prompt": "Focus on therapeutic protocols, surgical interventions, guidelines, and management strategies. Reference grounded protocols from major associations (AHA, ADA, NCCN)."
+        },
+        "Epidemiologist": {
+            "model": "stepfun/step-3.5-flash:free", # FAST for stats
+            "prompt": "Focus on disease prevalence, incidence, risk factors, transmission, and public health data. Use grounded data from CDC, WHO, or national health registries."
+        },
+        "Lifestyle/Nutrition": {
+            "model": "google/gemma-3-27b-it:free", # COMPLEX Nuance
+            "prompt": "Focus on diet, supplements, exercise, lifestyle modifications, and holistic health. Support with grounded evidence from clinical trials or nutrition guidelines."
+        }
+    }
     
-    prompt = (
-        "You are a Super Medical Expert. Verify the following claim using your internal knowledge base "
-        "(WHO, CDC, PubMed, FDA, and clinical guidelines).\n\n"
-        f"CLAIM: {claim}\n\n"
-        "TASKS:\n"
-        "1. Identify if a medical disease, drug, or symptom is mentioned.\n"
-        "2. Provide short, factual evidence confirming or correcting the claim.\n"
-        "3. Cite the likely source (e.g., 'According to WHO guidelines...').\n\n"
-        "RESPONSE:"
-    )
+    # Select relevant experts: NOW SELECTING ALL 7 as per user request "7 llms and 14 evidences"
+    selected_experts = list(expert_registry.keys())
     
-    out = call_llm(model, prompt, max_tokens=300)
+    print(f"DEBUG: Convening the Full Council of Experts ({len(selected_experts)} personas)...")
     
-    if out == "RATE_LIMIT_HIT":
-        return ["RATE_LIMIT_HIT"]
+    evidence_collected = []
+    
+    def call_single_expert(expert_name):
+        config = expert_registry.get(expert_name)
+        if not config: return None
         
-    if out:
-        return [f"[Source: Super Medical Expert] {out}"]
-    
-    return []
+        prompt = (
+            f"You are a specialized {expert_name}. {config['prompt']}\n"
+            f"CLAIM: {claim}\n"
+            "TASK: Provide **2 distinct** short factual evidence points (1 sentence each) confirming or debunking the claim.\n"
+            "OUTPUT FORMAT:\n"
+            "- Point 1\n"
+            "- Point 2"
+        )
+
+        try:
+            response = call_llm(config['model'], prompt, max_tokens=200)
+            if response and "RATE_LIMIT" not in response:
+                return f"[{expert_name}]: {response}"
+        except Exception as e:
+            print(f"Error calling {expert_name}: {e}")
+        return None
+
+    # Run in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(call_single_expert, name): name for name in selected_experts}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result:
+                evidence_collected.append(result)
+                
+    return evidence_collected
 
 # FREE MODEL FALLBACK LIST
 FREE_MODELS = [
@@ -243,27 +335,20 @@ def call_free_llm_with_fallback(prompt, max_tokens=200):
 def verify_claim_with_gemini(claim, evidence_list):
     # NOW USES OPENROUTER (GPT-4o-mini equivalent) - Balanced Mode
     if not evidence_list:
-        return "IRRELEVANT", "No evidence found.", None
+        # NEW FALLBACK: Check if it's common knowledge or a safety guideline
+        print("DEBUG: No direct evidence found. Checking for Common Knowledge / Safety Guideline...")
+        common_knowledge_status = check_common_knowledge_fallback(claim)
+        
+        if common_knowledge_status == "VERIFIED":
+            return "VERIFIED", "Standard medical consensus / Safety guideline (Common Knowledge).", None
+        else:
+            return "IRRELEVANT", "No evidence found and not common knowledge.", None
     
     # Use Top-3 Evidence Combined
     evidence_text = "\n\n".join(evidence_list[:3])
     
-    prompt = (
-        "You are a medical fact verification system.\n\n"
-        "Given:\n"
-        "1. A medical claim\n"
-        "2. Retrieved medical evidence\n\n"
-        "INSTRUCTIONS:\n"
-        "- **Verified**: The evidence *supports* or *strongly aligns* with the claim. (Allow for slight variations in phrasing).\n"
-        "- **Hallucinated**: The evidence *directly contradicts* the claim or states the opposite.\n"
-        "- **Irrelevant / No Evidence**: The evidence is unrelated or does not contain enough information to judge.\n\n"
-        "IMPORTANT:\n"
-        "Do not be overly cynical. If the evidence provides a high degree of confidence for the claim, mark it as Verified.\n"
-        "Respond with ONLY a JSON object in this format:\n"
-        "{ \"status\": \"Verified\" | \"Hallucinated\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"corrected claim if needed\" }\n\n"
-        f"Claim: {claim}\n\n"
-        f"Evidence: {evidence_text}\n"
-    )
+    # Mode 3 Prompt (Verification)
+    prompt = PROMPT_MODE_3_VERIFY.format(claim=claim, evidence_text=evidence_text)
     
     # Use Free Models as the Judge
     try:
@@ -355,22 +440,43 @@ def verify_claim_deterministic(claim, evidence_list):
     else:
         return "HALLUCINATED", f"Deterministic: Missing key terms: {', '.join(missing_words[:2])}", None
 
+def check_common_knowledge_fallback(claim):
+    """
+    Checks if a claim is 'Common Medical Knowledge' or a 'Standard Safety Guideline'
+    (e.g. 'Consult your doctor', 'Drink water', 'Exercise is good').
+    """
+    prompt = (
+        "You are a medical safety judge. Determine if the following claim is considered "
+        "**COMMON MEDICAL KNOWLEDGE** or a **STANDARD SAFETY GUIDELINE** that does not require specific new studies to prove.\n\n"
+        f"CLAIM: \"{claim}\"\n\n"
+        "EXAMPLES OF COMMON KNOWLEDGE / SAFETY GUIDELINES (Should be VERIFIED):\n"
+        "- \"Patients should consult their doctor before starting new supplements.\"\n"
+        "- \"Smoking is harmful to health.\"\n"
+        "- \"Regular exercise improves cardiovascular health.\"\n"
+        "- \"If symptoms persist, seek medical attention.\"\n\n"
+        "EXAMPLES OF SPECIFIC CLAIMS (Should be UNVERIFIED if no evidence):\n"
+        "- \"Drug X cures Cancer Y.\"\n"
+        "- \"Taking 5000mg of Vitamin C prevents COVID.\"\n\n"
+        "TASK:\n"
+        "- If the claim is a general safety advice or widely accepted fact, output: **VERIFIED**\n"
+        "- If the claim is specific, controversial, or requires data you don't have, output: **UNVERIFIED**\n\n"
+        "OUTPUT ONLY ONE WORD: 'VERIFIED' or 'UNVERIFIED'."
+    )
+    
+    # Use Generalist Model (Stepfun/Gemma)
+    response = call_free_llm_with_fallback(prompt, max_tokens=50)
+    
+    if response and "VERIFIED" in response.upper() and "UNVERIFIED" not in response.upper():
+        return "VERIFIED"
+    return "UNVERIFIED"
+
 def refine_text_for_verification(text):
     """
     Mode 2 Step 1: Semantically correct and refine the input text.
     """
     print("DEBUG: Refining text for verification...")
-    prompt = (
-        "You are an expert medical editor. Your task is to semantically refine the following text for clarity and correctness "
-        "before it is sent for fact-checking. \n"
-        "1. Correct any spelling or grammatical errors.\n"
-        "2. Ensure medical terms are used correctly.\n"
-        "3. Do NOT add new facts. Only clarity and precision.\n"
-        "4. DO NOT include conversational filler like 'Okay', 'Here is the refined text', etc.\n"
-        "5. FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
-        f"USER_TEXT: {text}\n\n"
-        "REFINED_TEXT: [The refined text here]\n"
-    )
+    # Mode 2 Prompt (Refinement Only)
+    prompt = PROMPT_MODE_2_REFINE.format(text=text)
     
     # Use robust fallback
     response_text = call_free_llm_with_fallback(prompt, max_tokens=300)
@@ -397,21 +503,8 @@ def generate_refined_answer_preview(question, context=None):
     if context:
         context_str = f"CONTEXT: {context}\n"
 
-    prompt = (
-        "You are a medical AI assistant. The user wants to verify a question.\n"
-        "1. REFINE the user's question to be precise and professional.\n"
-        "2. GENERATE a comprehensive, fact-based answer to the refined question.\n"
-        f"{context_str}"
-        "3. RULES:\n"
-        "   - DO NOT include conversational filler like 'Okay', 'Here is the answer', etc.\n"
-        "   - The ANSWER must be the direct medical answer.\n"
-        "   - NO markdown formatting in the answer (plain text preferred).\n"
-        "   - STRUCTURE the answer in exactly TWO PARAGRAPHS.\n"
-        "4. FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
-        f"USER_INPUT: {question}\n\n"
-        "REFINED_QUESTION: [The refined question here]\n"
-        "ANSWER: [The generated answer here]\n"
-    )
+    # Mode 1 Prompt (QA Generation)
+    prompt = PROMPT_MODE_1_QA.format(context_str=context_str, question=question)
     
     # Use robust fallback with higher token limit for answer generation
     response_text = call_free_llm_with_fallback(prompt, max_tokens=600)
@@ -458,3 +551,51 @@ def generate_refined_answer_preview(question, context=None):
     except Exception as e:
         print(f"Text Parse Error in Preview: {e}")
         return {"refined_question": question, "generated_answer": response_text}
+
+def extract_claims_with_llm(text):
+    """
+    Uses an LLM to split text into atomic, self-contained claims.
+    CRITICAL: Resolves pronouns (e.g., "It" -> "Ginger") to ensure context is preserved.
+    """
+    print(f"DEBUG: Extracting claims with LLM for context-aware resolution...")
+    
+    prompt = (
+        "You are an expert medical text analyst. Your task is to split the following text into individual, atomic claims.\n"
+        "RULES:\n"
+        "1. SPLIT complex sentences into single facts.\n"
+        "2. RESOLVE PRONOUNS: Replace 'It', 'He', 'They', 'This method' with the specific noun they refer to.\n"
+        "   - Example Input: 'Ginger is a root. It treats nausea.'\n"
+        "   - Example Output: 'Ginger is a root.' <SEP> 'Ginger treats nausea.'\n"
+        "3. MAKE CLAIMS SELF-CONTAINED: Each claim must make sense on its own without outside context.\n"
+        "4. IGNORE questions or conversational filler.\n"
+        "5. OUTPUT FORMAT: Join claims with <SEP>.\n\n"
+        f"TEXT: \"{text}\"\n\n"
+        "ATOMIC CLAIMS (joined by <SEP>):"
+    )
+    
+    response_text = call_free_llm_with_fallback(prompt, max_tokens=600)
+    
+    if not response_text or response_text == "RATE_LIMIT_HIT":
+        print("DEBUG: Extraction LLM failed. Returning original text as single claim.")
+        return [text]
+        
+    # Clean and split
+    # Remove any preamble LLM might output
+    if ":" in response_text and "<SEP>" not in response_text[:20]:
+         # Try to find where the claims start
+         parts = response_text.split(":")
+         if len(parts) > 1:
+             response_text = parts[-1] 
+             
+    raw_claims = response_text.replace("ATOMIC CLAIMS:", "").replace("\n", "").split("<SEP>")
+    
+    # Filter empty or too short
+    claims = [c.strip() for c in raw_claims if len(c.strip()) > 5]
+    
+    # Fallback if splitting failed but response exists
+    if not claims and len(response_text) > 5:
+        return [response_text.strip()]
+    elif not claims:
+        return [text]
+        
+    return claims

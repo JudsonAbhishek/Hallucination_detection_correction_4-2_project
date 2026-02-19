@@ -22,7 +22,8 @@ from nltk.tokenize import sent_tokenize
 from part2_llm import (
     generate_medical_answer,
     fetch_expert_evidence,
-    verify_claim_with_gemini
+    verify_claim_with_gemini,
+    extract_claims_with_llm
 )
 from part1_retrieval import (
     fetch_pubmed_evidence,
@@ -66,6 +67,7 @@ t5_model.eval()
 def extract_atomic_claims(text):
     """
     Uses T5 to split complex text into individual atomic medical claims.
+    Reliant on refined input text for pronoun resolution.
     """
     prompt = (
         f"Split the following text into individual, atomic claims. Separate them with <SEP>.\n"
@@ -183,7 +185,7 @@ def process_and_verify_text(text, stage_name="Verification"):
             is_hallu = True
             verdict = "Hallucinated"
             hallucinated_count += 1
-            final_text = correction_claim if correction_claim else reason
+            final_text = correction_claim if correction_claim else "No clinical evidence supports this claim."
             print(f" -> [VERDICT] [HALLUCINATED] (Correction Generated)")
         else:
             print(f" -> [VERDICT] [EVIDENCE NOT FOUND]")

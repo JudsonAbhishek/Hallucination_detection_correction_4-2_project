@@ -3,7 +3,7 @@ from part3_main_pipeline import run_medhallu_pipeline
 import json
 import time
 
-app = Flask(__name__, template_folder='static')
+app = Flask(__name__, template_folder='static') # Reload trigger
 
 @app.route("/", methods=["GET"])
 def home():
