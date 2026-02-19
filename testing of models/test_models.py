@@ -55,7 +55,7 @@ def test_remote_models():
         "arcee-ai/trinity-large-preview:free",
         "openrouter/aurora-alpha",
         "google/gemma-3-4b-it:free",
-        "deepseek/deepseek-r1-0528:free"
+        "openrouter/free"
     ]
     
     for i, model in enumerate(models, 3):
