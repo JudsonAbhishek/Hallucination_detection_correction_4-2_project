@@ -187,8 +187,11 @@ def process_and_verify_text(text, stage_name="Verification"):
             hallucinated_count += 1
             final_text = correction_claim if correction_claim else "No clinical evidence supports this claim."
             print(f" -> [VERDICT] [HALLUCINATED] (Correction Generated)")
+        elif status == "INSUFFICIENT_EVIDENCE":
+            verdict = "Evidence Not Found"
+            print(f" -> [VERDICT] [INSUFFICIENT EVIDENCE] (Low Risk/Non-Medical)")
         else:
-            print(f" -> [VERDICT] [EVIDENCE NOT FOUND]")
+            print(f" -> [VERDICT] [EVIDENCE NOT FOUND] (General Fallback)")
         
         detailed_results.append({
             "claim": claim,

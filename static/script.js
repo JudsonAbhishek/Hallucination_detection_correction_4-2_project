@@ -2,8 +2,8 @@
 document.addEventListener("DOMContentLoaded", function () {
     const form = document.getElementById("verifyForm");
     const submitBtn = document.getElementById("submitBtn");
-    const spinner = document.querySelector(".spinner");
-    const btnText = document.querySelector(".btn-text");
+    const btnText = submitBtn.querySelector(".btn-text");
+    const finalVerifyBtn = document.getElementById("finalVerifyBtn");
 
     // Input Groups
     const questionGroup = document.getElementById("questionGroup");
@@ -12,9 +12,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const questionInput = document.getElementById("question");
     const answerInput = document.getElementById("ai_answer");
 
-    // Progress Elements
-    const loadingStatus = document.getElementById("loadingStatus");
-    const loadingText = document.getElementById("loadingText");
+    // Progress Elements (Legacy)
     // const progressBar = document.getElementById("progressBar"); // Not used currently
     // const percentText = document.getElementById("percentText"); // Not used currently
 
@@ -102,13 +100,12 @@ document.addEventListener("DOMContentLoaded", function () {
     const refinementTitle = document.getElementById("refinementTitle");
     const refinementSubtitle = document.getElementById("refinementSubtitle");
     const refinedInput = document.getElementById("refinedInput");
-    const finalVerifyBtn = document.getElementById("finalVerifyBtn");
 
     form.addEventListener("submit", async function (e) {
         e.preventDefault();
 
         // STEP 1: PREVIEW / REFINE
-        setLoading(true);
+        setLoading(true, "submit");
         resetUI(); // Hide previous results
 
         const formData = new FormData(form);
@@ -137,13 +134,13 @@ document.addEventListener("DOMContentLoaded", function () {
             console.error(err);
             alert(`Error: ${err.message}`);
         } finally {
-            setLoading(false);
+            setLoading(false, "submit");
         }
     });
 
     finalVerifyBtn.addEventListener("click", async function () {
         // STEP 2: FINAL EXECUTION
-        setLoading(true);
+        setLoading(true, "final");
 
         // Prepare data for final analysis
         // We reuse the form data but update the 'ai_answer' (and 'question' if needed) with REFINED content
@@ -182,7 +179,7 @@ document.addEventListener("DOMContentLoaded", function () {
             console.error(err);
             alert(`Error: ${err.message}`);
         } finally {
-            setLoading(false);
+            setLoading(false, "final");
         }
     });
 
@@ -225,33 +222,36 @@ document.addEventListener("DOMContentLoaded", function () {
         correctedContainer.classList.add("hidden");
     }
 
-    function setLoading(isLoading) {
+    function setLoading(isLoading, btnType = "submit") {
+        const targetBtn = btnType === "submit" ? submitBtn : finalVerifyBtn;
+        const targetSpinner = targetBtn.querySelector(".spinner");
+        const targetText = targetBtn.querySelector(".btn-text");
+
         submitBtn.disabled = isLoading;
-        // Disable tabs too
+        finalVerifyBtn.disabled = isLoading;
         document.querySelectorAll(".tab-btn").forEach(btn => btn.disabled = isLoading);
 
         if (isLoading) {
-            spinner.classList.remove("hidden");
-            btnText.textContent = "Processing...";
-            loadingStatus.classList.remove("hidden");
+            targetSpinner.classList.remove("hidden");
+            targetText.dataset.originalText = targetText.textContent;
+            targetText.textContent = "Processing...";
         } else {
-            spinner.classList.add("hidden");
-            // Check mode to set correct text
-            const mode = document.getElementById("modeInput").value;
-            // Mode 1 (value='generate') is now labeled "Verify Text" per user swap? 
-            // Logic: Mode 1 button says "Generate & Verify", Mode 2 says "Verify Provided Text".
-            // The swap was only for TAB labels.
-
-            if (mode === 'generate') {
-                btnText.textContent = "Generate & Verify";
-            } else {
-                btnText.textContent = "Verify Provided Text";
+            targetSpinner.classList.add("hidden");
+            if (targetText.dataset.originalText) {
+                targetText.textContent = targetText.dataset.originalText;
+            } 
+            
+            // Fallback just in case
+            if (btnType === "submit" && (!targetText.dataset.originalText || targetText.dataset.originalText === "Processing...")) {
+                const mode = document.getElementById("modeInput").value;
+                if (mode === 'generate') {
+                    targetText.textContent = "Generate & Verify";
+                } else {
+                    targetText.textContent = "Verify Provided Text";
+                }
+            } else if (btnType === "final" && (!targetText.dataset.originalText || targetText.dataset.originalText === "Processing...")) {
+                targetText.textContent = "Double Check & Verify";
             }
-
-            // Keep loading status visible for a moment if needed, or hide it
-            setTimeout(() => {
-                loadingStatus.classList.add("hidden");
-            }, 1000);
         }
     }
 
@@ -414,8 +414,31 @@ document.addEventListener("DOMContentLoaded", function () {
         return `<span style="color: ${color}">${arrow} ${absVal}%</span>`;
     }
 
-    // Initialize UI
-    window.switchTab('generate');
+    // URL Parameter Handling (Deep Linking)
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlMode = urlParams.get('mode');
+    const urlQuestion = urlParams.get('question');
+    const urlAnswer = urlParams.get('ai_answer');
+
+    if (urlMode) {
+        window.switchTab(urlMode);
+    }
+
+    if (urlQuestion) {
+        questionInput.value = urlQuestion;
+    }
+    
+    if (urlAnswer) {
+        answerInput.value = urlAnswer;
+    }
+
+    // Auto-submit if question/answer is provided via URL
+    if (urlQuestion || urlAnswer) {
+        // We delay slightly to ensure DOM is ready and switchTab has finished
+        setTimeout(() => {
+            form.dispatchEvent(new Event('submit'));
+        }, 500);
+    }
 });
 
 function toggleEvidence(btn) {

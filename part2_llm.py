@@ -51,22 +51,20 @@ PROMPT_MODE_3_VERIFY = (
     "1. A medical claim\n"
     "2. Retrieved medical evidence (may be imperfect or partial)\n\n"
     "INSTRUCTIONS:\n"
-    "Your goal is to determine if the claim is FACTUALLY TRUE based on the evidence + your own medical knowledge.\n\n"
+    "Determine the status of the claim using the following hierarchy:\n\n"
     "- **VERIFIED**: \n"
-    "   - The evidence *supports* the claim (semantically or contextually).\n"
-    "   - OR the claim is a **NEGATIVE FACT** (e.g., 'X does not cure Y') and the evidence shows no proof of a cure.\n"
-    "   - OR the claim is **STANDARD MEDICAL CONSENSUS** (e.g., 'Smoking causes cancer', 'Consult a doctor') even if the specific retrieved snippets are weak.\n"
+    "   - Strong evidence supports the claim.\n"
+    "   - OR it is standard medical consensus (e.g., 'Smoking is bad', 'Consult a doctor').\n"
     "- **HALLUCINATED**: \n"
-    "   - The evidence *contradicts* the claim.\n"
-    "   - OR the claim is scientifically implausible / false.\n"
-    "   - OR the claim makes a specific, non-consensus assertion (e.g., 'Drug X cures Cancer') that is NOT supported by the evidence.\n"
-    "- **IRRELEVANT**: The claim is not medical or is subjective opinion.\n\n"
-    "IMPORTANT:\n"
-    "1. **PRIORITIZE TRUTH**: If the claim is medically true (e.g., 'Fasting isn't a cure for diabetes'), mark it VERIFIED, even if the evidence text doesn't say the exact words 'not a cure'.\n"
-    "2. **CORRECTION STRATEGY**: If Hallucinated, provide a DIRECT FACTUAL CORRECTION.\n"
-    "   - State the correction authoritatively (e.g., 'No evidence supports X; standard care is Y').\n\n"
+    "   - The evidence DIRECTLY contradicts the claim.\n"
+    "   - OR (CRITICAL SAFETY RULE): The claim makes a specific medical assertion (e.g., 'Cures cancer', 'Treats X') but there is ZERO evidence supporting it. Lack of evidence for a high-risk medical claim is a Hallucination.\n"
+    "- **INSUFFICIENT EVIDENCE**: \n"
+    "   - No evidence was found, but the claim is low-risk/low-impact or general information that doesn't violate clinical safety.\n"
+    "- **IRRELEVANT**: The claim is not medical (e.g., 'The sky is blue').\n\n"
+    "OUTPUT RULE:\n"
+    "If 'Eating apples cures cancer' is the claim and NO evidence is found, you MUST mark it as HALLUCINATED because it is a dangerous medical claim without support.\n\n"
     "Respond with ONLY a JSON object in this format:\n"
-    "{{ \"status\": \"Verified\" | \"Hallucinated\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"(Optional) correction if Hallucinated\" }}\n\n"
+    "{{ \"status\": \"Verified\" | \"Hallucinated\" | \"Insufficient Evidence\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"(Optional) correction if Hallucinated\" }}\n\n"
     "Claim: {claim}\n\n"
     "Evidence: {evidence_text}\n"
 )
@@ -245,7 +243,7 @@ def fetch_expert_evidence(claim):
             "prompt": "Focus on clinical presentation, signs, symptoms, and differential diagnosis. Base your answer on grounded clinical texts like Harrison's or UpToDate."
         },
         "Diagnostic Expert": {
-            "model": "google/gemma-3-27b-it:free", # COMPLEX Logic
+            "model": "google/gemma-3-4b-it:free", # COMPLEX Logic
             "prompt": "Focus on diagnostic criteria, lab reference ranges, imaging findings, and biomarkers. Use grounded references from ACR, radiological societies, or lab manuals."
         },
         "Treatment Expert": {
@@ -257,7 +255,7 @@ def fetch_expert_evidence(claim):
             "prompt": "Focus on disease prevalence, incidence, risk factors, transmission, and public health data. Use grounded data from CDC, WHO, or national health registries."
         },
         "Lifestyle/Nutrition": {
-            "model": "google/gemma-3-27b-it:free", # COMPLEX Nuance
+            "model": "google/gemma-3-4b-it:free", # COMPLEX Nuance
             "prompt": "Focus on diet, supplements, exercise, lifestyle modifications, and holistic health. Support with grounded evidence from clinical trials or nutrition guidelines."
         }
     }
@@ -304,7 +302,6 @@ def fetch_expert_evidence(claim):
 FREE_MODELS = [
     "stepfun/step-3.5-flash:free",
     "arcee-ai/trinity-large-preview:free",
-    "openrouter/aurora-alpha",
     "google/gemma-3-4b-it:free",
     "openrouter/free"
 ]
@@ -383,15 +380,18 @@ def verify_claim_with_gemini(claim, evidence_list):
             else:
                 data = {"status": "Hallucinated"} # Default fallback
             
-        status = data.get("status", "Hallucinated")
+        status_raw = data.get("status", "Hallucinated")
         
         # Normalize Status
-        if "verified" in status.lower():
+        status_lower = status_raw.lower()
+        if "verified" in status_lower:
             status = "VERIFIED"
-        elif "hallucinated" in status.lower():
+        elif "hallucinated" in status_lower:
             status = "HALLUCINATED"
+        elif "insufficient" in status_lower or "evidence not found" in status_lower:
+            status = "INSUFFICIENT_EVIDENCE"
         else:
-            status = "HALLUCINATED" 
+            status = "IRRELEVANT"
             
         return status, data.get("reason", "No reason provided."), data.get("correction", None)
         

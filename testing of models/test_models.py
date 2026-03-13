@@ -53,7 +53,6 @@ def test_remote_models():
     models = [
         "stepfun/step-3.5-flash:free",
         "arcee-ai/trinity-large-preview:free",
-        "openrouter/aurora-alpha",
         "google/gemma-3-4b-it:free",
         "openrouter/free"
     ]
