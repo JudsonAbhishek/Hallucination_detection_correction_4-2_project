@@ -13,18 +13,21 @@ load_dotenv()
 # --- PROMPTS ---
 
 PROMPT_MODE_1_QA = (
-    "You are a medical AI assistant. The user wants to verify a question.\n"
+    "You are a medical AI assistant. Your goal is to provide a grounded medical answer.\n\n"
+    "CRITICAL RULE: PRONOUNS ARE FORBIDDEN\n"
+    "You MUST NOT use: 'It', 'They', 'These', 'The drug', 'The treatment', 'The condition'.\n"
+    "- You MUST repeat the specific name of the medical subject (e.g., 'Metformin', 'Turmeric') in every single sentence.\n"
+    "- BAD: 'Turmeric is good. It treats cancer.'\n"
+    "- GOOD: 'Turmeric is considered a health supplement. Turmeric has been historically claimed to treat certain conditions.'\n\n"
     "1. REFINE the user's question to be precise and professional.\n"
-    "2. GENERATE a comprehensive, fact-based answer to the refined question.\n"
+    "2. GENERATE a comprehensive, fact-based answer to the refined question exactly according to the RULES below.\n\n"
     "{context_str}"
     "3. RULES:\n"
-    "   - DO NOT include conversational filler like 'Okay', 'Here is the answer', etc.\n"
-    "   - The ANSWER must be the direct medical answer.\n"
-    "   - NO markdown formatting in the answer (plain text preferred).\n"
-    "   - **NO PRONOUNS**: You must NOT use pronouns like 'It', 'They', 'He', 'She', 'These'. Always repeat the noun (e.g., say 'The vaccine' instead of 'It').\n"
-    "   - **SIMPLE TERMS**: Use simple, clear language understandable by a layperson.\n"
-    "   - **NO HEDGING/ADVICE**: DO NOT use words like 'suggest', 'recommend', 'mostly', 'I guess', 'probably'. State facts directly.\n"
-    "   - **STRUCTURE**: The answer must be exactly ONE PARAGRAPH.\n"
+    "   - The ANSWER must be exactly ONE PARAGRAPH.\n"
+    "   - NO markdown formatting.\n"
+    "   - **NO PRONOUNS**: Every sentence must stand alone with the full subject name. Never use 'It'.\n"
+    "   - **SIMPLE TERMS**: Use clear language for laypeople.\n"
+    "   - **NO HEDGING**: State facts directly.\n\n"
     "4. FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
     "USER_INPUT: {question}\n\n"
     "REFINED_QUESTION: [The refined question here]\n"
@@ -32,41 +35,57 @@ PROMPT_MODE_1_QA = (
 )
 
 PROMPT_MODE_2_REFINE = (
-    "You are an expert medical editor. Your task is to semantically refine the following text for clarity and correctness "
-    "before it is sent for fact-checking. \n"
-    "1. Correct any spelling or grammatical errors.\n"
-    "2. **RESOLVE PRONOUNS**: Replace vague pronouns (It, They, He, She, This) with the specific medical noun they refer to.\n"
-    "   - Example: 'Ginger is a root. It treats nausea.' -> 'Ginger is a root. Ginger treats nausea.'\n"
-    "3. **DO NOT FACT-CHECK**: Preserve the original meaning and claims, even if they are medically incorrect. We only want to fix the language structure.\n"
-    "4. Ensure medical terms are used correctly contextually, but do not change the assertion.\n"
-    "5. DO NOT include conversational filler like 'Okay', 'Here is the refined text', etc.\n"
-    "6. FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
+    "You are an expert medical editor. Your task is to semantically refine text for clinical fact-checking.\n\n"
+    "CRITICAL RULE: PRONOUNS ARE FORBIDDEN\n"
+    "You MUST NOT use: 'It', 'They', 'He', 'She', 'This', 'This drug', 'The substance', 'The condition'.\n"
+    "- You MUST replace every pronoun with the exact name of the subject.\n"
+    "- If the text is about 'Turmeric', every sentence must say 'Turmeric'.\n"
+    "- Every single sentence in the REFINED_TEXT must be a complete, self-contained medical fact.\n"
+    "- Example: 'Ginger is a root. It treats nausea.' -> 'Ginger is a root. Ginger treats nausea.'\n\n"
+    "INSTRUCTIONS:\n"
+    "1. Correct spelling and grammar.\n"
+    "2. DO NOT change the medical assertions (assertions must remain exactly as the user provided, even if factually wrong).\n\n"
+    "FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
     "USER_TEXT: {text}\n\n"
-    "REFINED_TEXT: [The refined text here]\n"
+    "REFINED_TEXT: [The refined text with NO PRONOUNS here]\n"
 )
 
 PROMPT_MODE_3_VERIFY = (
-    "You are a medical fact verification system.\n\n"
+    "You are a medical evidence evaluator.\n\n"
     "Given:\n"
     "1. A medical claim\n"
-    "2. Retrieved medical evidence (may be imperfect or partial)\n\n"
+    "2. Retrieved evidence (abstracts, studies, or expert insights)\n\n"
     "INSTRUCTIONS:\n"
-    "Determine the status of the claim using the following hierarchy:\n\n"
+    "First, assess RELEVANCE. Does the evidence take a stance on the topic of the claim? If the evidence is about an unrelated condition or a different drug, it is IRRELEVANT.\n\n"
+    "Determine the status using this hierarchy:\n\n"
     "- **VERIFIED**: \n"
-    "   - Strong evidence supports the claim.\n"
-    "   - OR it is standard medical consensus (e.g., 'Smoking is bad', 'Consult a doctor').\n"
-    "- **HALLUCINATED**: \n"
-    "   - The evidence DIRECTLY contradicts the claim.\n"
-    "   - OR (CRITICAL SAFETY RULE): The claim makes a specific medical assertion (e.g., 'Cures cancer', 'Treats X') but there is ZERO evidence supporting it. Lack of evidence for a high-risk medical claim is a Hallucination.\n"
+    "   - Strong, relevant evidence supports the claim.\n"
+    "   - OR it is a fundamental safety guideline (e.g., 'See a doctor').\n"
+    "- **CONTRADICTED**: \n"
+    "   - Relevant evidence directly DISPROVES the claim.\n"
+    "   - OR (CRITICAL): The claim makes a high-risk medical assertion (e.g., 'Cures X', 'Prevents Y') but the evidence explicitly states there is NO evidence for such an effect.\n"
     "- **INSUFFICIENT EVIDENCE**: \n"
-    "   - No evidence was found, but the claim is low-risk/low-impact or general information that doesn't violate clinical safety.\n"
-    "- **IRRELEVANT**: The claim is not medical (e.g., 'The sky is blue').\n\n"
-    "OUTPUT RULE:\n"
-    "If 'Eating apples cures cancer' is the claim and NO evidence is found, you MUST mark it as HALLUCINATED because it is a dangerous medical claim without support.\n\n"
-    "Respond with ONLY a JSON object in this format:\n"
-    "{{ \"status\": \"Verified\" | \"Hallucinated\" | \"Insufficient Evidence\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"(Optional) correction if Hallucinated\" }}\n\n"
+    "   - The evidence provided does not contain enough information to confirm or deny the claim.\n"
+    "- **IRRELEVANT**: \n"
+    "   - The evidence provided is about a completely different medical topic (e.g., claim is about 'survival without water' but evidence is about 'diuretics and sodium').\n\n"
+    "Respond ONLY with a JSON object:\n"
+    "{{ \"status\": \"Verified\" | \"Contradicted\" | \"Insufficient Evidence\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"(If Contradicted) The factual correction\" }}\n\n"
     "Claim: {claim}\n\n"
     "Evidence: {evidence_text}\n"
+)
+
+PROMPT_MODE_4_OMNI_SEARCH = (
+    "You are the Chief Medical Intelligence Officer. This claim has already been checked by PubMed and a Council of Experts, but no specific evidence was found.\n\n"
+    "TASK:\n"
+    "Perform a deep retrieval from your internal medical training data, simulating a search across ALL TRUSTED global sources (e.g., Google Scholar, textbooks, international consensus papers, European Medicines Agency, etc.).\n\n"
+    "CLAIM: {claim}\n\n"
+    "INSTRUCTIONS:\n"
+    "1. Provide 2 highly specific factual evidence points that confirm or deny this claim.\n"
+    "2. Cite the likely 'Trusted Source' (e.g., 'Source: European Society of Cardiology', 'Source: Harrison's Principles of Internal Medicine').\n"
+    "3. If THIS claim is genuinely unproven or unknown globally, state 'GLOBAL_UNKNOWN'.\n\n"
+    "OUTPUT FORMAT:\n"
+    "- Evidence Point 1 (Source: [Source Type])\n"
+    "- Evidence Point 2 (Source: [Source Type])"
 )
 
 def call_llm(model, prompt, max_tokens=200):
@@ -230,33 +249,33 @@ def fetch_expert_evidence(claim):
     # Define the 7 Experts with specific Models and Prompts
     # Using reliable free models: Stepfun (Fast), Trinity (Reasoning), Gemma (General)
     expert_registry = {
-        "Generalist": {
-            "model": "stepfun/step-3.5-flash:free",  # FAST & General
-            "prompt": "Verify this claim using standard medical consensus (WHO/CDC). Ensure evidence is grounded in reputable medical guidelines."
-        },
-        "Pharmacologist": {
-            "model": "arcee-ai/trinity-large-preview:free", # REASONING Specialized
-            "prompt": "Focus on drug mechanisms, pharmacokinetics, interactions, side effects, and dosage. Cite grounded sources like DrugBank, FDA labels, or major pharmacopoeias."
+        "Fever Expert": {
+            "model": "deepseek/deepseek-chat",
+            "prompt": "Evaluate fever-related clinical reasoning using global guidelines. Consider threshold values, duration, and epidemiological context. Reference evidence from: ['WHO', 'CDC']"
         },
         "Symptom Expert": {
-            "model": "stepfun/step-3.5-flash:free", # FAST for pattern matching
-            "prompt": "Focus on clinical presentation, signs, symptoms, and differential diagnosis. Base your answer on grounded clinical texts like Harrison's or UpToDate."
+            "model": "qwen/qwen-2.5-7b-instruct",
+            "prompt": "Analyze presenting symptoms and map patterns to possible etiologies. Consider progression, timeline, and co-occurring features. Reference evidence from: ['PubMed', 'MedlinePlus']"
         },
-        "Diagnostic Expert": {
-            "model": "google/gemma-3-4b-it:free", # COMPLEX Logic
-            "prompt": "Focus on diagnostic criteria, lab reference ranges, imaging findings, and biomarkers. Use grounded references from ACR, radiological societies, or lab manuals."
+        "Disease Expert": {
+            "model": "meta-llama/llama-3-8b-instruct",
+            "prompt": "Match symptom clusters to candidate diseases and differentials. Prioritize prevalence, age group, region, and comorbidities. Reference evidence from: ['Mayo Clinic', 'Medscape']"
         },
-        "Treatment Expert": {
-            "model": "arcee-ai/trinity-large-preview:free", # REASONING Specialized
-            "prompt": "Focus on therapeutic protocols, surgical interventions, guidelines, and management strategies. Reference grounded protocols from major associations (AHA, ADA, NCCN)."
+        "Diagnosis Expert": {
+            "model": "mistralai/mistral-7b-instruct",
+            "prompt": "Evaluate diagnostic likelihood using clinical decision rules and flowcharts. Consider Bayesian reasoning, sensitivity/specificity, and red flags. Reference evidence from: ['UpToDate', 'BMJ Best Practice']"
         },
-        "Epidemiologist": {
-            "model": "stepfun/step-3.5-flash:free", # FAST for stats
-            "prompt": "Focus on disease prevalence, incidence, risk factors, transmission, and public health data. Use grounded data from CDC, WHO, or national health registries."
+        "Drug Expert": {
+            "model": "mistralai/mistral-nemo",
+            "prompt": "Propose medication and treatment pathways with dosing & contraindications. Consider age, severity, allergies, pregnancy, interactions, and comorbidities. Reference evidence from: ['Drugs.com', 'FDA Database']"
         },
-        "Lifestyle/Nutrition": {
-            "model": "google/gemma-3-4b-it:free", # COMPLEX Nuance
-            "prompt": "Focus on diet, supplements, exercise, lifestyle modifications, and holistic health. Support with grounded evidence from clinical trials or nutrition guidelines."
+        "Lab Expert": {
+            "model": "openai/gpt-4o-mini",
+            "prompt": "Interpret expected laboratory test findings and deviations. Consider ranges, diagnostic value, and follow-up testing. Reference evidence from: ['LabCorp', 'NIH']"
+        },
+        "Risk Expert": {
+            "model": "anthropic/claude-3.5-haiku",
+            "prompt": "Estimate risk severity, complications, and escalation triggers. Include admission criteria, red-flag symptoms, and clinical thresholds. Reference evidence from: ['NICE Guidelines', 'CDC']"
         }
     }
     
@@ -297,6 +316,21 @@ def fetch_expert_evidence(claim):
                 evidence_collected.append(result)
                 
     return evidence_collected
+
+def fetch_omni_source_evidence(claim):
+    """
+    FINAL FAIL-SAFE: The Judge searches global knowledge for evidence when experts fail.
+    """
+    print(f" -> [FAIL-SAFE] Chief Medical Officer is performing global cross-source retrieval...")
+    
+    prompt = PROMPT_MODE_4_OMNI_SEARCH.format(claim=claim)
+    
+    # Use the most capable available model for global knowledge
+    response = call_free_llm_with_fallback(prompt, max_tokens=300)
+    
+    if response and "GLOBAL_UNKNOWN" not in response:
+        return [f"[Omni-Source]: {response}"]
+    return []
 
 # FREE MODEL FALLBACK LIST
 FREE_MODELS = [
@@ -380,18 +414,18 @@ def verify_claim_with_gemini(claim, evidence_list):
             else:
                 data = {"status": "Hallucinated"} # Default fallback
             
-        status_raw = data.get("status", "Hallucinated")
+        status_raw = data.get("status", "Insufficient Evidence")
         
-        # Normalize Status
+        # Normalize Status to Academic Classes
         status_lower = status_raw.lower()
         if "verified" in status_lower:
             status = "VERIFIED"
-        elif "hallucinated" in status_lower:
-            status = "HALLUCINATED"
-        elif "insufficient" in status_lower or "evidence not found" in status_lower:
-            status = "INSUFFICIENT_EVIDENCE"
-        else:
+        elif "contradicted" in status_lower or "hallucinated" in status_lower:
+            status = "CONTRADICTED"
+        elif "irrelevant" in status_lower:
             status = "IRRELEVANT"
+        else:
+            status = "INSUFFICIENT_EVIDENCE"
             
         return status, data.get("reason", "No reason provided."), data.get("correction", None)
         
@@ -432,13 +466,20 @@ def verify_claim_deterministic(claim, evidence_list):
             
     overlap_ratio = found_count / len(claim_words)
     
+    # RED FLAG CHECK: High-risk words require much higher evidence confidence
+    risk_words = {"cure", "cures", "completely", "prevent", "vaccine", "cancer", "diabetes"}
+    is_high_risk = any(w in claim_words for w in risk_words)
+    
     print(f"DEBUG: Deterministic Found: {found_count}/{len(claim_words)} (Ratio: {overlap_ratio:.2f})")
     
-    # Threshold: Balanced 25% for medical keywords
-    if overlap_ratio >= 0.25:
+    # Threshold: Balanced 50% for medical keywords, 75% for high-risk claims
+    required_threshold = 0.75 if is_high_risk else 0.50
+    
+    if overlap_ratio >= required_threshold:
         return "VERIFIED", f"Deterministic: Found {int(overlap_ratio*100)}% of keywords.", None
     else:
-        return "HALLUCINATED", f"Deterministic: Missing key terms: {', '.join(missing_words[:2])}", None
+        status = "HALLUCINATED" if is_high_risk else "INSUFFICIENT_EVIDENCE"
+        return status, f"Deterministic: Missing key terms: {', '.join(missing_words[:2])}", None
 
 def check_common_knowledge_fallback(claim):
     """
@@ -566,7 +607,7 @@ def extract_claims_with_llm(text):
         "2. RESOLVE PRONOUNS: Replace 'It', 'He', 'They', 'This method' with the specific noun they refer to.\n"
         "   - Example Input: 'Ginger is a root. It treats nausea.'\n"
         "   - Example Output: 'Ginger is a root.' <SEP> 'Ginger treats nausea.'\n"
-        "3. MAKE CLAIMS SELF-CONTAINED: Each claim must make sense on its own without outside context.\n"
+        "3. MAKE CLAIMS SELF-CONTAINED: Every claim MUST have the full medical subject name in it.\n"
         "4. IGNORE questions or conversational filler.\n"
         "5. OUTPUT FORMAT: Join claims with <SEP>.\n\n"
         f"TEXT: \"{text}\"\n\n"

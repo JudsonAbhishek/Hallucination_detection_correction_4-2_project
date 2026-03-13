@@ -239,8 +239,8 @@ document.addEventListener("DOMContentLoaded", function () {
             targetSpinner.classList.add("hidden");
             if (targetText.dataset.originalText) {
                 targetText.textContent = targetText.dataset.originalText;
-            } 
-            
+            }
+
             // Fallback just in case
             if (btnType === "submit" && (!targetText.dataset.originalText || targetText.dataset.originalText === "Processing...")) {
                 const mode = document.getElementById("modeInput").value;
@@ -279,7 +279,10 @@ document.addEventListener("DOMContentLoaded", function () {
 
         animateValue(totalClaimsEl, 0, total, 1000);
         animateValue(verifiedCountEl, 0, verified, 1000);
-        animateValue(hallucinatedCountEl, 0, hallucinated, 1000);
+
+        // Handle both 'Contradicted' and legacy 'Hallucinated' counts
+        const contradicted = data.claims ? data.claims.filter(c => c.verification_status === "Contradicted" || c.verification_status === "Hallucinated").length : 0;
+        animateValue(hallucinatedCountEl, 0, contradicted, 1000);
         animateValue(missingCountEl, 0, missing, 1000);
 
         if (data.analysis && analysisSection) {
@@ -288,9 +291,9 @@ document.addEventListener("DOMContentLoaded", function () {
             if (afterAcc) afterAcc.textContent = `${data.analysis.after.accuracy}%`;
             if (impAcc) impAcc.innerHTML = formatImprovement(data.analysis.improvement.accuracy, true);
 
-            if (beforeHall) beforeHall.textContent = `${data.analysis.before.hallucination_rate}%`;
-            if (afterHall) afterHall.textContent = `${data.analysis.after.hallucination_rate}%`;
-            if (impHall) impHall.innerHTML = formatImprovement(data.analysis.improvement.hallucination, false);
+            if (beforeHall) beforeHall.textContent = `${data.analysis.before.hallucination_rate || 0}%`;
+            if (afterHall) afterHall.textContent = `${data.analysis.after.hallucination_rate || 0}%`;
+            if (impHall) impHall.innerHTML = formatImprovement(data.analysis.improvement.hallucination || 0, false);
 
             if (analysisReportText) analysisReportText.textContent = data.analysis.report;
         }
@@ -330,10 +333,10 @@ document.addEventListener("DOMContentLoaded", function () {
             badgeClass += " badge-verified";
             badgeText = "VERIFIED";
             icon = '<i class="fa-solid fa-check"></i>';
-        } else if (claim.verification_status === "Hallucinated") {
+        } else if (claim.verification_status === "Hallucinated" || claim.verification_status === "Contradicted") {
             statusClass += " hallucinated";
             badgeClass += " badge-hallucinated";
-            badgeText = "HALLUCINATED";
+            badgeText = claim.verification_status === "Contradicted" ? "CONTRADICTED" : "HALLUCINATED";
             icon = '<i class="fa-solid fa-xmark"></i>';
         } else {
             statusClass += " evidence-not-found";
@@ -357,7 +360,7 @@ document.addEventListener("DOMContentLoaded", function () {
             <p class="claim-text">"${claim.claim}"</p>
         `;
 
-        if (claim.correction && claim.verification_status === "Hallucinated") {
+        if (claim.correction && (claim.verification_status === "Hallucinated" || claim.verification_status === "Contradicted")) {
             html += `
             <div class="correction-area">
                 <strong><i class="fa-solid fa-pen-nib"></i> Correction:</strong> ${claim.correction}
@@ -427,7 +430,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (urlQuestion) {
         questionInput.value = urlQuestion;
     }
-    
+
     if (urlAnswer) {
         answerInput.value = urlAnswer;
     }

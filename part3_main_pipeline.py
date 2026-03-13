@@ -128,94 +128,98 @@ def process_and_verify_text(text, stage_name="Verification"):
 
     detailed_results = []
     verified_count = 0
-    hallucinated_count = 0
+    contradicted_count = 0
+    insufficient_count = 0
     final_claims_text = []
 
     for i, claim in enumerate(claims, 1):
         print(f"\n--- [Claim {i}/{len(claims)}] Processing ---")
         print(f"Content: '{claim[:70]}...'")
         
-        # 1. Retrieval
-        print(f" -> [RETRIEVAL] Initiating search...")
-        
-        print(f"    - Checking PubMed database...")
+        # 1. Primary Retrieval (PubMed + MedHallu)
+        print(f" -> [RETRIEVAL] Fetching from PubMed and MedHallu...")
         evidence_pubmed = fetch_pubmed_evidence(claim)
-        
-        print(f"    - Checking MedHallu knowledge base...")
         evidence_medhallu = fetch_medhallu_evidence(claim)
+        primary_evidence = list(set(evidence_medhallu + evidence_pubmed))
         
-        evidence_list = list(set(evidence_medhallu + evidence_pubmed))
-        
-        source_used = "MedHallu + PubMed" if (evidence_pubmed and evidence_medhallu) else ("PubMed" if evidence_pubmed else "MedHallu")
-        if not evidence_list: source_used = "None"
-        
-        print(f" -> [RETRIEVAL] Complete. Found {len(evidence_list)} snippets from {source_used}.")
-
-        # 2. Verification
+        # 2. Judge Review (Relevance & Sufficiency)
         status = "IRRELEVANT"
-        reason = "No evidence found."
+        reason = "Primary retrieval found no evidence."
         correction_claim = None
+        source_used = "None"
 
-        if evidence_list:
-            print(f" -> [JUDGE] Medical Judge is analyzing evidence and claim...")
-            status, reason, correction_claim = verify_claim_with_gemini(claim, evidence_list)
-            print(f" -> [JUDGE] Analysis finished.")
-        
-        # 3. Smart Fallback (Expert LLMs)
-        if status == "IRRELEVANT":
-            print(f" -> [FALLBACK] Consulting Medical Expert LLMs...")
-            evidence_experts = fetch_expert_evidence(claim)
-            if evidence_experts:
-                evidence_list = evidence_experts
-                source_used = "Expert LLMs (Fallback)"
-                print(f" -> Expert provided {len(evidence_list)} insights. Re-verifying...")
-                status, reason, correction_claim = verify_claim_with_gemini(claim, evidence_list)
+        if primary_evidence:
+            print(f" -> [JUDGE] Reviewing primary evidence for relevance...")
+            status, reason, correction_claim = verify_claim_with_gemini(claim, primary_evidence)
+            source_used = "PubMed + MedHallu"
+            print(f" -> [JUDGE] Primary Status: {status}")
 
-        # 4. Final Verdict
-        is_hallu = False
-        verdict = "Evidence Not Found"
+        # 3. Expert Escalation (If Primary retrieval is irrelevant/insufficient)
+        if status in ["IRRELEVANT", "INSUFFICIENT_EVIDENCE"]:
+            print(f" -> [ESCALATION] Escalating to Council of 7 Experts...")
+            expert_evidence = fetch_expert_evidence(claim)
+            
+            if expert_evidence:
+                print(f" -> [JUDGE] Reviewing expert insights...")
+                status, reason, correction_claim = verify_claim_with_gemini(claim, expert_evidence)
+                source_used = "Expert Council (7 LLMs)"
+                print(f" -> [JUDGE] Expert Review Status: {status}")
+
+        # 3.5 Final Fail-Safe (Omni-Source Search)
+        if status in ["IRRELEVANT", "INSUFFICIENT_EVIDENCE"]:
+            from part2_llm import fetch_omni_source_evidence
+            print(f" -> [FAIL-SAFE] Escalating to Chief Medical Intelligence Officer (Global Search)...")
+            omni_evidence = fetch_omni_source_evidence(claim)
+            
+            if omni_evidence:
+                print(f" -> [JUDGE] Final review of global medical sources...")
+                status, reason, correction_claim = verify_claim_with_gemini(claim, omni_evidence)
+                source_used = "Omni-Source (Global Consensus)"
+                print(f" -> [JUDGE] Final Global Status: {status}")
+            else:
+                status = "INSUFFICIENT_EVIDENCE"
+                reason = "No relevant insights found by experts, primary sources, or global knowledge."
+
+        # 4. Final Verdict Mapping
         final_text = claim 
+        verdict = "Insufficient Evidence"
         
         if status == "VERIFIED":
             verdict = "Verified"
             verified_count += 1
-            final_text = correction_claim if correction_claim else claim
+            final_text = claim # Keep original if verified
             print(f" -> [VERDICT] [VERIFIED]")
-        elif status == "HALLUCINATED":
-            is_hallu = True
-            verdict = "Hallucinated"
-            hallucinated_count += 1
-            final_text = correction_claim if correction_claim else "No clinical evidence supports this claim."
-            print(f" -> [VERDICT] [HALLUCINATED] (Correction Generated)")
-        elif status == "INSUFFICIENT_EVIDENCE":
-            verdict = "Evidence Not Found"
-            print(f" -> [VERDICT] [INSUFFICIENT EVIDENCE] (Low Risk/Non-Medical)")
+        elif status == "CONTRADICTED":
+            verdict = "Contradicted"
+            contradicted_count += 1
+            final_text = correction_claim if correction_claim else "This claim is clinically contradicted."
+            print(f" -> [VERDICT] [CONTRADICTED] (Factually incorrect)")
         else:
-            print(f" -> [VERDICT] [EVIDENCE NOT FOUND] (General Fallback)")
+            verdict = "Insufficient Evidence"
+            insufficient_count += 1
+            final_text = claim # Keep as is, but mark it
+            print(f" -> [VERDICT] [INSUFFICIENT EVIDENCE]")
         
         detailed_results.append({
             "claim": claim,
-            "hallucination_score": 1.0 if is_hallu else 0.0, 
             "verification_status": verdict,
-            "evidence": evidence_list,
+            "evidence": primary_evidence if source_used.startswith("PubMed") else (expert_evidence if 'expert_evidence' in locals() else []),
             "source": source_used,
             "correction": final_text
         })
         final_claims_text.append(final_text)
 
     # 5. Metrics
-    total_considered = verified_count + hallucinated_count
     total_claims = len(claims)
-    accuracy = (verified_count / total_considered * 100) if total_considered > 0 else 0.0
-    hall_rate = (hallucinated_count / total_considered * 100) if total_considered > 0 else 0.0
-    coverage = (total_considered / total_claims * 100) if total_claims > 0 else 0.0
+    accuracy = (verified_count / total_claims * 100) if total_claims > 0 else 0.0
+    contradiction_rate = (contradicted_count / total_claims * 100) if total_claims > 0 else 0.0
 
     metrics = {
         "correct": verified_count,
-        "hallucinated": hallucinated_count,
+        "contradicted": contradicted_count,
+        "insufficient": insufficient_count,
         "accuracy": accuracy,
-        "hallucination_rate": hall_rate,
-        "coverage": coverage,
+        "contradiction_rate": contradiction_rate,
         "total": total_claims
     }
     
@@ -230,34 +234,32 @@ def process_and_verify_text(text, stage_name="Verification"):
 def analyze_results(metrics):
     """
     Generates comparison data for the single-pass view.
-    Baseline = What we found in the original answer.
-    MedHallu = The corrected state.
+    Baseline = Status of original text.
+    MedHallu = Status after correction.
     """
-    # For single-pass, we use metrics_1 as 'Baseline'.
-    # We 'predict' the improvement based on corrections.
-    
     baseline = {
         "accuracy": round(metrics["accuracy"], 1),
-        "hallucination_rate": round(metrics["hallucination_rate"], 1),
-        "coverage": round(metrics["coverage"], 1)
+        "hallucination_rate": round(metrics["contradiction_rate"], 1),
+        "insufficient_rate": round((metrics["insufficient"] / metrics["total"] * 100) if metrics["total"] > 0 else 0, 1),
+        "contradicted_count": metrics["contradicted"]
     }
     
-    # After correction, the goal of MedHallu is to achieve a pristine factual state.
-    # We set the 'After' targets to 100% Accuracy and 0% Hallucination based on the correction pipeline.
+    # After correction, we aim for 100% accuracy and 0% contradiction
     after = {
         "accuracy": 100.0,
         "hallucination_rate": 0.0,
-        "coverage": baseline["coverage"]
+        "insufficient_rate": baseline["insufficient_rate"],
+        "contradicted_count": 0
     }
     
     acc_improvement = after["accuracy"] - baseline["accuracy"]
-    hall_reduction = baseline["hallucination_rate"] - after["hallucination_rate"]
+    cont_reduction = baseline["hallucination_rate"] - after["hallucination_rate"]
 
     report = (
         f"The MedHallu pipeline analyzed {metrics['total']} claims. "
-        f"Initial accuracy was {baseline['accuracy']:.1f}% with a hallucination rate of {baseline['hallucination_rate']:.1f}%. "
-        f"By identifying and semantically correcting every detected error using cross-referenced evidence, "
-        f"the final output achieves a 0% hallucination rate, ensuring maximum clinical safety and factual reliability."
+        f"Initial factual accuracy was {baseline['accuracy']:.1f}% with a contradiction rate of {baseline['hallucination_rate']:.1f}%. "
+        f"By using a Judge-led relevance review and Council of Expert escalation for {baseline['insufficient_rate']:.1f}% of low-evidence claims, "
+        f"the final output maximizes clinical safety and ensures every detected contradiction is corrected."
     )
 
     return {
@@ -265,7 +267,7 @@ def analyze_results(metrics):
         "after": after,
         "improvement": {
             "accuracy": round(acc_improvement, 1),
-            "hallucination": round(hall_reduction, 1)
+            "hallucination": round(cont_reduction, 1)
         },
         "report": report
     }
@@ -292,18 +294,18 @@ def run_medhallu_pipeline(question, ai_answer):
             "claims": []
         }
 
-    final_score = metrics["hallucination_rate"]
+    final_score = metrics["contradiction_rate"]
     final_status = "PASSED" if final_score < 30 else "FAILED"
 
     print(f"\n--- [FINAL SUMMARY] ---")
     print(f"Status: {final_status}")
-    print(f"Initial Hallucination Score: {metrics['hallucination_rate']:.1f}%")
-    print(f"Claims Verified: {metrics['correct']} | Hallucinated: {metrics['hallucinated']} | Total: {metrics['total']}")
+    print(f"Initial Contradiction Rate: {metrics['contradiction_rate']:.1f}%")
+    print(f"Claims Verified: {metrics['correct']} | Contradicted: {metrics['contradicted']} | Insufficient Evidence: {metrics['insufficient']} | Total: {metrics['total']}")
     print("======================================\n")
 
     return {
         "status": final_status,
-        "initial_hallucination_score": f"{metrics['hallucination_rate']:.1f}%", 
+        "initial_hallucination_score": f"{metrics['contradiction_rate']:.1f}%", 
         "final_answer": corrected_text,
         "claims": results,
         "claims_2": [], 

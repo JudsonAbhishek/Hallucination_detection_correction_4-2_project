@@ -634,13 +634,15 @@ textarea::placeholder {
 }
 
 .correction-area {
-    margin-top: 1.25rem;
-    background: #fff5f5;
-    border: 1px solid #fed7d7;
-    padding: 1rem;
-    border-radius: var(--radius-sm);
-    color: #9b2c2c;
+    margin-top: 1.5rem;
+    background: var(--danger-bg);
+    border: 1px solid var(--danger-border);
+    padding: 1.25rem;
+    border-radius: var(--radius-md);
+    color: var(--danger-text);
     font-size: 0.95rem;
+    line-height: 1.5;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
 }
 
 .evidence-area {
