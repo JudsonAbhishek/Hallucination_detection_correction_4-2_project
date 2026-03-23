@@ -246,35 +246,34 @@ def fetch_expert_evidence(claim):
     """
     print(f"DEBUG: Convening the Council of Experts for: '{claim[:50]}...'")
     
-    # Define the 7 Experts with specific Models and Prompts
-    # Using reliable free models: Stepfun (Fast), Trinity (Reasoning), Gemma (General)
+    # Define the 7 Experts with 100% FREE Models (No Credits Required)
     expert_registry = {
         "Fever Expert": {
-            "model": "deepseek/deepseek-chat",
+            "model": "stepfun/step-3.5-flash:free",
             "prompt": "Evaluate fever-related clinical reasoning using global guidelines. Consider threshold values, duration, and epidemiological context. Reference evidence from: ['WHO', 'CDC']"
         },
         "Symptom Expert": {
-            "model": "qwen/qwen-2.5-7b-instruct",
+            "model": "google/gemma-3-4b-it:free",
             "prompt": "Analyze presenting symptoms and map patterns to possible etiologies. Consider progression, timeline, and co-occurring features. Reference evidence from: ['PubMed', 'MedlinePlus']"
         },
         "Disease Expert": {
-            "model": "meta-llama/llama-3-8b-instruct",
+            "model": "meta-llama/llama-3.2-3b-instruct:free",
             "prompt": "Match symptom clusters to candidate diseases and differentials. Prioritize prevalence, age group, region, and comorbidities. Reference evidence from: ['Mayo Clinic', 'Medscape']"
         },
         "Diagnosis Expert": {
-            "model": "mistralai/mistral-7b-instruct",
+            "model": "mistralai/mistral-small-3.1-24b-instruct:free",
             "prompt": "Evaluate diagnostic likelihood using clinical decision rules and flowcharts. Consider Bayesian reasoning, sensitivity/specificity, and red flags. Reference evidence from: ['UpToDate', 'BMJ Best Practice']"
         },
         "Drug Expert": {
-            "model": "mistralai/mistral-nemo",
+            "model": "arcee-ai/trinity-large-preview:free",
             "prompt": "Propose medication and treatment pathways with dosing & contraindications. Consider age, severity, allergies, pregnancy, interactions, and comorbidities. Reference evidence from: ['Drugs.com', 'FDA Database']"
         },
         "Lab Expert": {
-            "model": "openai/gpt-4o-mini",
+            "model": "google/gemma-3-12b-it:free",
             "prompt": "Interpret expected laboratory test findings and deviations. Consider ranges, diagnostic value, and follow-up testing. Reference evidence from: ['LabCorp', 'NIH']"
         },
         "Risk Expert": {
-            "model": "anthropic/claude-3.5-haiku",
+            "model": "meta-llama/llama-3.3-70b-instruct:free",
             "prompt": "Estimate risk severity, complications, and escalation triggers. Include admission criteria, red-flag symptoms, and clinical thresholds. Reference evidence from: ['NICE Guidelines', 'CDC']"
         }
     }
@@ -298,7 +297,7 @@ def fetch_expert_evidence(claim):
             "- Point 1\n"
             "- Point 2"
         )
-
+ 
         try:
             response = call_llm(config['model'], prompt, max_tokens=200)
             if response and "RATE_LIMIT" not in response:
@@ -306,7 +305,7 @@ def fetch_expert_evidence(claim):
         except Exception as e:
             print(f"Error calling {expert_name}: {e}")
         return None
-
+ 
     # Run in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(call_single_expert, name): name for name in selected_experts}
@@ -316,7 +315,7 @@ def fetch_expert_evidence(claim):
                 evidence_collected.append(result)
                 
     return evidence_collected
-
+ 
 def fetch_omni_source_evidence(claim):
     """
     FINAL FAIL-SAFE: The Judge searches global knowledge for evidence when experts fail.
@@ -331,13 +330,14 @@ def fetch_omni_source_evidence(claim):
     if response and "GLOBAL_UNKNOWN" not in response:
         return [f"[Omni-Source]: {response}"]
     return []
-
+ 
 # FREE MODEL FALLBACK LIST
 FREE_MODELS = [
     "stepfun/step-3.5-flash:free",
-    "arcee-ai/trinity-large-preview:free",
-    "google/gemma-3-4b-it:free",
-    "openrouter/free"
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-3-12b-it:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "arcee-ai/trinity-large-preview:free"
 ]
 
 def call_free_llm_with_fallback(prompt, max_tokens=200):
