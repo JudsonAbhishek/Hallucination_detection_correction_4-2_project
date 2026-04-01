@@ -75,26 +75,26 @@ def load_knowledge_base():
     # 1. Load MedHallu (Ground Truths)
     print("Loading MedHallu Ground Truths...")
     try:
-        medhallu_data = load_dataset("UTAustin-AIHealth/MedHallu", "pqa_labeled")["train"]
+        medhallu_data = load_dataset("UTAustin-AIHealth/MedHallu", "pqa_labeled", trust_remote_code=True)["train"]
         for row in medhallu_data:
             # Format: 'Q: ... | GT: ...'
             text = f"Q: {row.get('Question', '')} | GT: {row.get('Ground Truth', '')}"
             corpus.append(text)
     except Exception as e:
-        print(f"Error loading MedHallu: {e}")
+        print(f"WARNING: Error loading MedHallu dataset ({e}). Skipping but continuing with seed knowledge.")
 
     # 2. Load PubMed-QA (Subset for Proxy)
     print("Loading PubMed-QA (Artificial subset)...")
     try:
         # 'pqa_artificial' is smaller and good for testing
-        pubmed_data = load_dataset("pubmed_qa", "pqa_artificial", split="train[:1000]") 
+        pubmed_data = load_dataset("pubmed_qa", "pqa_artificial", split="train[:1000]", trust_remote_code=True) 
         for row in pubmed_data:
             # Context usually contains the abstract strings
             context = " ".join(row.get('context', {}).get('contexts', []))
             if len(context) > 50:
                  corpus.append(f"Abstract: {context}")
     except Exception as e:
-        print(f"Error loading PubMed-QA: {e}")
+        print(f"WARNING: Error loading PubMed-QA dataset ({e}). Skipping but continuing with seed knowledge.")
     # 3. MANUAL INJECTION (SEED KNOWLEDGE FOR DEMO)
     # Since we are offline with a small subset, we add specific knowledge for our test cases.
     seed_knowledge = [

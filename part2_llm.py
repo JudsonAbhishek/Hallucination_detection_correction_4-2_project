@@ -2,10 +2,30 @@ import os
 import requests
 import json
 import time
+import random
 import re
+import torch
 from dotenv import load_dotenv
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 load_dotenv()
+
+# --- GLOBALS ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# --- OFFLINE MODELS (Flan-T5) ---
+t5_tokenizer = None
+t5_model = None
+
+try:
+    print("Loading Flan-T5 for Atomic Claim Extraction...")
+    t5_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
+    t5_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(DEVICE)
+    t5_model.eval()
+except Exception as e:
+    print(f"WARNING: Flan-T5 loading failed ({e}). Fallback to NLTK/LLM extraction will be active.")
 
 # --- PROMPTS ---
 
@@ -13,25 +33,16 @@ load_dotenv()
 # --- PROMPTS ---
 
 PROMPT_MODE_1_QA = (
-    "You are a medical AI assistant. Your goal is to provide a grounded medical answer.\n\n"
-    "CRITICAL RULE: PRONOUNS ARE FORBIDDEN\n"
-    "You MUST NOT use: 'It', 'They', 'These', 'The drug', 'The treatment', 'The condition'.\n"
-    "- You MUST repeat the specific name of the medical subject (e.g., 'Metformin', 'Turmeric') in every single sentence.\n"
-    "- BAD: 'Turmeric is good. It treats cancer.'\n"
-    "- GOOD: 'Turmeric is considered a health supplement. Turmeric has been historically claimed to treat certain conditions.'\n\n"
-    "1. REFINE the user's question to be precise and professional.\n"
-    "2. GENERATE a comprehensive, fact-based answer to the refined question exactly according to the RULES below.\n\n"
-    "{context_str}"
-    "3. RULES:\n"
-    "   - The ANSWER must be exactly ONE PARAGRAPH.\n"
-    "   - NO markdown formatting.\n"
-    "   - **NO PRONOUNS**: Every sentence must stand alone with the full subject name. Never use 'It'.\n"
-    "   - **SIMPLE TERMS**: Use clear language for laypeople.\n"
-    "   - **NO HEDGING**: State facts directly.\n\n"
-    "4. FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
-    "USER_INPUT: {question}\n\n"
-    "REFINED_QUESTION: [The refined question here]\n"
-    "ANSWER: [The generated answer here]\n"
+    "You are a Senior Medical AI Consultant. Task: Refine a user inquiry and provide a grounded, evidence-based medical answer.\n\n"
+    "GUIDELINES:\n"
+    "- Provide a comprehensive, professional response.\n"
+    "- Address standard benefits and address potential hallucinations directly with scientific consensus.\n"
+    "- Use medical terminology correctly.\n\n"
+    "OUTPUT FORMAT (STRICT):\n"
+    "REFINED_QUESTION: [Professional research-grade version of the input]\n"
+    "ANSWER: [A detailed, one paragraph factual answer with 5-6 sentences. Ensure every detected hallucination or high-risk claim in the input is directly clarified with evidence-based corrections.]\n\n"
+    "CONTEXT: {context_str}\n"
+    "INPUT: {question}\n"
 )
 
 PROMPT_MODE_2_REFINE = (
@@ -41,14 +52,17 @@ PROMPT_MODE_2_REFINE = (
     "- You MUST replace every pronoun with the exact name of the subject.\n"
     "- If the text is about 'Turmeric', every sentence must say 'Turmeric'.\n"
     "- Every single sentence in the REFINED_TEXT must be a complete, self-contained medical fact.\n"
+    "- **NO DUPLICATE CLAIMS:** Do not repeat the same medical assertion multiple times in different ways. Each claim in the refined text must be distinct and unique.\n"
     "- Example: 'Ginger is a root. It treats nausea.' -> 'Ginger is a root. Ginger treats nausea.'\n\n"
     "INSTRUCTIONS:\n"
     "1. Correct spelling and grammar.\n"
-    "2. DO NOT change the medical assertions (assertions must remain exactly as the user provided, even if factually wrong).\n\n"
+    "2. DO NOT change the medical assertions (assertions must remain exactly as the user provided, even if factually wrong).\n"
+    "3. Eliminate any redundant or overlapping sentences that state the same fact.\n\n"
     "FORMAT YOUR OUTPUT EXACTLY AS FOLLOWS:\n\n"
     "USER_TEXT: {text}\n\n"
-    "REFINED_TEXT: [The refined text with NO PRONOUNS here]\n"
+    "REFINED_TEXT: [The refined text with NO PRONOUNS and NO REPETITION here]\n"
 )
+
 
 PROMPT_MODE_3_VERIFY = (
     "You are a medical evidence evaluator.\n\n"
@@ -68,11 +82,12 @@ PROMPT_MODE_3_VERIFY = (
     "   - The evidence provided does not contain enough information to confirm or deny the claim.\n"
     "- **IRRELEVANT**: \n"
     "   - The evidence provided is about a completely different medical topic (e.g., claim is about 'survival without water' but evidence is about 'diuretics and sodium').\n\n"
-    "Respond ONLY with a JSON object:\n"
-    "{{ \"status\": \"Verified\" | \"Contradicted\" | \"Insufficient Evidence\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"(If Contradicted) The factual correction\" }}\n\n"
+    "Respond ONLY with a valid JSON object:\n"
+    "{{ \"status\": \"Verified\" | \"Contradicted\" | \"Insufficient Evidence\" | \"Irrelevant\", \"reason\": \"short explanation\", \"correction\": \"(Required if Contradicted) A professional factual correction of the claim based on the evidence provided.\" }}\n\n"
     "Claim: {claim}\n\n"
     "Evidence: {evidence_text}\n"
 )
+
 
 PROMPT_MODE_4_OMNI_SEARCH = (
     "You are the Chief Medical Intelligence Officer. This claim has already been checked by PubMed and a Council of Experts, but no specific evidence was found.\n\n"
@@ -88,49 +103,61 @@ PROMPT_MODE_4_OMNI_SEARCH = (
     "- Evidence Point 2 (Source: [Source Type])"
 )
 
-def call_llm(model, prompt, max_tokens=200):
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        print("WARNING: OPENROUTER_API_KEY not found. Skipping Expert LLM fallback.")
-        return ""
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
+def call_groq_llm(model, prompt, max_tokens=600):
+    if not GROQ_API_KEY:
+        return "RATE_LIMIT_HIT"
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://medhallu.app", # Optional, for OpenRouter rankings
-        "X-Title": "MedHallu"
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
     }
     data = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "max_tokens": max_tokens
+        "max_tokens": max_tokens,
+        "temperature": 0.2
     }
-
-    # 2s Rate Limiting backoff for Free Tier (Safety)
-    time.sleep(2)
-
+    
     try:
-        # Reduced timeout to avoid hanging the pipeline too long during fallback
-        r = requests.post(url, headers=headers, json=data, timeout=20)
-        
-        # Immediate 429 Detection
-        if r.status_code == 429:
-            print(f"CRITICAL: Rate limit hit (429) for {model}. Switching to fallback mode.")
-            return "RATE_LIMIT_HIT"
-            
-        if r.status_code != 200:
-            print(f"OpenRouter Error ({model}): {r.status_code} - {r.text}")
-            return ""
-            
-        res = r.json()
-        if "choices" not in res:
-            return ""
-        return res["choices"][0]["message"]["content"]
+        r = requests.post(url, headers=headers, json=data, timeout=15)
+        if r.status_code == 413: return "CONTEXT_EXCEEDED"
+        if r.status_code == 429: return "RATE_LIMIT_HIT"
+        if r.status_code == 200:
+            res = r.json()
+            return res['choices'][0]['message']['content']
     except Exception as e:
-        print(f"LLM Call Error ({model}): {e}")
-        return ""
+        print(f"Groq Error: {e}")
+    return "RATE_LIMIT_HIT"
+
+def call_gemini_native(prompt, max_tokens=1000):
+    """Native Google AI Studio (v1beta) for Gemini 2.5 Flash"""
+    if not GEMINI_API_KEY:
+        return "RATE_LIMIT_HIT"
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.1-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.1
+        }
+    }
+    
+    try:
+        r = requests.post(url, json=payload, timeout=25)
+        if r.status_code == 429: return "RATE_LIMIT_HIT"
+        if r.status_code == 200:
+            res = r.json()
+            if "candidates" in res and len(res["candidates"]) > 0:
+                return res["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        print(f"Gemini Native Error: {e}")
+    return "RATE_LIMIT_HIT"
+
+    return "RATE_LIMIT_HIT"
+
+
 
 def generate_medical_answer(question, context=None):
     print(f"DEBUG: Generating medical answer for: {question}")
@@ -150,7 +177,7 @@ def generate_medical_answer(question, context=None):
     
     # Use free model fallback
     try:
-        answer = call_free_llm_with_fallback(prompt, max_tokens=400)
+        answer = call_free_llm_with_fallback(prompt, max_tokens=600)
         if not answer:
             return "Error: Could not generate an answer at this time (Service Busy)."
         return answer
@@ -246,37 +273,46 @@ def fetch_expert_evidence(claim):
     """
     print(f"DEBUG: Convening the Council of Experts for: '{claim[:50]}...'")
     
-    # Define the 7 Experts with 100% FREE Models (No Credits Required)
+    # Define the 7 Experts (CONFIRMED 2026 FREE MODELS)
     expert_registry = {
         "Fever Expert": {
-            "model": "stepfun/step-3.5-flash:free",
+            "model": "llama-3.1-8b-instant",
+            "provider": "groq",
             "prompt": "Evaluate fever-related clinical reasoning using global guidelines. Consider threshold values, duration, and epidemiological context. Reference evidence from: ['WHO', 'CDC']"
         },
         "Symptom Expert": {
-            "model": "google/gemma-3-4b-it:free",
+            "model": "llama-3.1-70b-versatile",
+            "provider": "groq",
             "prompt": "Analyze presenting symptoms and map patterns to possible etiologies. Consider progression, timeline, and co-occurring features. Reference evidence from: ['PubMed', 'MedlinePlus']"
         },
         "Disease Expert": {
-            "model": "meta-llama/llama-3.2-3b-instruct:free",
+            "model": "mixtral-8x7b-32768",
+            "provider": "groq",
             "prompt": "Match symptom clusters to candidate diseases and differentials. Prioritize prevalence, age group, region, and comorbidities. Reference evidence from: ['Mayo Clinic', 'Medscape']"
         },
         "Diagnosis Expert": {
-            "model": "mistralai/mistral-small-3.1-24b-instruct:free",
+            "model": "gemini",
+            "provider": "gemini",
             "prompt": "Evaluate diagnostic likelihood using clinical decision rules and flowcharts. Consider Bayesian reasoning, sensitivity/specificity, and red flags. Reference evidence from: ['UpToDate', 'BMJ Best Practice']"
         },
         "Drug Expert": {
-            "model": "arcee-ai/trinity-large-preview:free",
+            "model": "llama-3.3-70b-versatile",
+            "provider": "groq",
             "prompt": "Propose medication and treatment pathways with dosing & contraindications. Consider age, severity, allergies, pregnancy, interactions, and comorbidities. Reference evidence from: ['Drugs.com', 'FDA Database']"
         },
         "Lab Expert": {
-            "model": "google/gemma-3-12b-it:free",
+            "model": "gemma2-9b-it",
+            "provider": "groq",
             "prompt": "Interpret expected laboratory test findings and deviations. Consider ranges, diagnostic value, and follow-up testing. Reference evidence from: ['LabCorp', 'NIH']"
         },
         "Risk Expert": {
-            "model": "meta-llama/llama-3.3-70b-instruct:free",
+            "model": "llama-3.1-8b-instant",
+            "provider": "groq",
             "prompt": "Estimate risk severity, complications, and escalation triggers. Include admission criteria, red-flag symptoms, and clinical thresholds. Reference evidence from: ['NICE Guidelines', 'CDC']"
         }
     }
+
+
     
     # Select relevant experts: NOW SELECTING ALL 7 as per user request "7 llms and 14 evidences"
     selected_experts = list(expert_registry.keys())
@@ -299,21 +335,31 @@ def fetch_expert_evidence(claim):
         )
  
         try:
-            response = call_llm(config['model'], prompt, max_tokens=200)
-            if response and "RATE_LIMIT" not in response:
+            provider = config.get("provider")
+            if provider == "groq":
+                response = call_groq_llm(config['model'], prompt, max_tokens=200)
+            elif provider == "gemini":
+                response = call_gemini_native(prompt, max_tokens=200)
+            else:
+                response = call_groq_llm("llama-3.1-8b-instant", prompt, max_tokens=200)
+
+                
+            if response and "RATE_LIMIT" not in response and "OUT_OF_CREDITS" not in response:
                 return f"[{expert_name}]: {response}"
         except Exception as e:
+
+
             print(f"Error calling {expert_name}: {e}")
         return None
  
-    # Run in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(call_single_expert, name): name for name in selected_experts}
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            if result:
-                evidence_collected.append(result)
-                
+    # Run sequentially (linear execution) to minimize rate limiting 429 errors
+    for name in selected_experts:
+        result = call_single_expert(name)
+        if result:
+            evidence_collected.append(result)
+        # Add a delay between linear runs to prevent spamming the free API server
+        time.sleep(2)
+        
     return evidence_collected
  
 def fetch_omni_source_evidence(claim):
@@ -331,40 +377,34 @@ def fetch_omni_source_evidence(claim):
         return [f"[Omni-Source]: {response}"]
     return []
  
-# FREE MODEL FALLBACK LIST
-FREE_MODELS = [
-    "stepfun/step-3.5-flash:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemma-3-12b-it:free",
-    "mistralai/mistral-small-3.1-24b-instruct:free",
-    "arcee-ai/trinity-large-preview:free"
-]
-
-def call_free_llm_with_fallback(prompt, max_tokens=200):
+# FALLBACK ORDER: Gemini -> Groq
+def call_free_llm_with_fallback(prompt, max_tokens=600):
     """
-    Tries multiple free models in sequence.
-    Returns content of first success.
+    Tries primary providers (Gemini, Groq) to ensure response.
     """
-    last_rate_limit_hit = False
+    # 1. Try Gemini (High Accuracy, Stable v1beta)
+    print("DEBUG: Attempting Gemini (Primary)...")
+    res = call_gemini_native(prompt, max_tokens=max_tokens)
+    if res and res not in ["RATE_LIMIT_HIT", "OUT_OF_CREDITS"] and len(res) > 20:
+        return res
     
-    for model in FREE_MODELS:
-        print(f"DEBUG: Active Model -> {model}")
-        res = call_llm(model, prompt, max_tokens=max_tokens)
-        
-        if res == "RATE_LIMIT_HIT":
-            print(f"DEBUG: {model} is rate limited. Trying next fallback...")
-            last_rate_limit_hit = True
-            continue # Try next model!
-            
-        if res:
+    # 2. Try Groq (Ultra Fast)
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
+    for m in models:
+        print(f"DEBUG: Attempting Groq {m}...")
+        res = call_groq_llm(m, prompt, max_tokens=max_tokens)
+        if res and res not in ["RATE_LIMIT_HIT", "OUT_OF_CREDITS"]:
             return res
         
-        print(f"DEBUG: Model {model} failed. Trying next...")
-            
-    return "RATE_LIMIT_HIT" if last_rate_limit_hit else ""
+    return "ERROR: All API providers (Gemini, Groq) failed or are rate limited. Please wait 60 seconds."
+
+
+
 
 def verify_claim_with_gemini(claim, evidence_list):
-    # NOW USES OPENROUTER (GPT-4o-mini equivalent) - Balanced Mode
+    # NOW USES THE COMBINED ENGINE (Gemini/Groq)
+
+
     if not evidence_list:
         # NEW FALLBACK: Check if it's common knowledge or a safety guideline
         print("DEBUG: No direct evidence found. Checking for Common Knowledge / Safety Guideline...")
@@ -519,16 +559,26 @@ def refine_text_for_verification(text):
     # Mode 2 Prompt (Refinement Only)
     prompt = PROMPT_MODE_2_REFINE.format(text=text)
     
-    # Use robust fallback
-    response_text = call_free_llm_with_fallback(prompt, max_tokens=300)
+    # Use the robust fallback chain to ensure we get a result even if one model is busy
+    response_text = call_free_llm_with_fallback(prompt, max_tokens=600)
     
-    if not response_text:
-        return text
+    if "RATE_LIMIT_HIT" in response_text or "ERROR:" in response_text:
+        raise Exception("Cloud API Rate Limit hit. Please wait 60 seconds and try again.")
+
         
+    if response_text == "RATE_LIMIT_HIT" or "ERROR:" in response_text:
+        raise Exception("Cloud API Rate Limit hit. Please wait 60 seconds and try again.")
+        
+    # Robust splitting for Mode 2
     try:
         if "REFINED_TEXT:" in response_text:
-            return response_text.split("REFINED_TEXT:")[1].strip()
-        return response_text.strip()
+            clean_text = response_text.split("REFINED_TEXT:")[-1].strip()
+        else:
+            # Fallback for case variations
+            parts = re.split(r"(?i)REFINED_TEXT\s*[:*-]+", response_text)
+            clean_text = parts[-1].strip()
+        
+        return clean_text.strip('"`* \n')
     except Exception as e:
         print(f"Refinement Parse Error: {e}")
         return response_text.strip()
@@ -547,47 +597,70 @@ def generate_refined_answer_preview(question, context=None):
     # Mode 1 Prompt (QA Generation)
     prompt = PROMPT_MODE_1_QA.format(context_str=context_str, question=question)
     
-    # Use robust fallback with higher token limit for answer generation
-    response_text = call_free_llm_with_fallback(prompt, max_tokens=600)
+    # Use the robust fallback chain for the preview step (Mode 1)
+    response_text = call_free_llm_with_fallback(prompt, max_tokens=800)
     
-    if not response_text:
-        return {"refined_question": question, "generated_answer": "Error: All free models failed to respond. Please try again later."}
+    if "RATE_LIMIT_HIT" in response_text or "ERROR:" in response_text:
+        raise Exception("Cloud API Rate Limit hit. Please wait 60 seconds and try again.")
+
         
-    # Text-based parsing
+    # Robust Regex Parsing
     refined_q = question
     gen_answer = response_text
     
     try:
-        lines = response_text.split('\n')
-        q_found = False
-        a_found = False
+        # Robust case-insensitive partitioning
+        res_upper = response_text.upper()
         
-        q_text = []
-        a_text = []
-        
-        current_section = None
-        
-        for line in lines:
-            if line.strip().startswith("REFINED_QUESTION:"):
-                current_section = "Q"
-                q_text.append(line.replace("REFINED_QUESTION:", "").strip())
-                continue
-            elif line.strip().startswith("ANSWER:"):
-                current_section = "A"
-                a_text.append(line.replace("ANSWER:", "").strip())
-                continue
-                
-            if current_section == "Q":
-                q_text.append(line)
-            elif current_section == "A":
-                a_text.append(line)
-                
-        if q_text:
-            refined_q = " ".join(q_text).strip()
-        if a_text:
-            gen_answer = "\n".join(a_text).strip()
+        # Check if BOTH labels exist
+        if "REFINED_QUESTION:" in res_upper and "ANSWER:" in res_upper:
+            # Split by REFINED_QUESTION
+            q_match = re.search(r"(?i)REFINED_QUESTION\s*[:*-]+\s*(.*?)\s*(?=ANSWER:)", response_text, re.DOTALL)
+            a_match = re.search(r"(?i)ANSWER\s*[:*-]+\s*(.*)", response_text, re.DOTALL)
             
-        return {"refined_question": refined_q, "generated_answer": gen_answer}
+            if q_match:
+                refined_q = q_match.group(1).strip()
+            if a_match:
+                gen_answer = a_match.group(1).strip()
+        
+        elif "REFINED_QUESTION:" in res_upper:
+            # Only Refined Question label found, answer might be after it or omitted
+            parts = re.split(r"(?i)REFINED_QUESTION\s*[:*-]+", response_text)
+            content = parts[1].strip()
+            # If there's a large chunk of text, maybe it contains both?
+            # We'll split by double newline as a heuristic if Answer label is missing
+            if "\n\n" in content:
+                sub_parts = content.split("\n\n", 1)
+                refined_q = sub_parts[0].strip()
+                gen_answer = sub_parts[1].strip()
+            else:
+                refined_q = content
+                gen_answer = "No detailed answer generated. Please check your query."
+
+        elif "ANSWER:" in res_upper:
+            # Only Answer label found
+            parts = re.split(r"(?i)ANSWER\s*[:*-]+", response_text)
+            refined_q = question # Fallback to original
+            gen_answer = parts[1].strip()
+            
+        else:
+            # NO LABELS FOUND - Use heuristic split if possible
+            if "\n\n" in response_text:
+                parts = response_text.split("\n\n", 1)
+                refined_q = parts[0].strip()
+                gen_answer = parts[1].strip()
+            else:
+                refined_q = question
+                gen_answer = response_text
+
+        # FINAL CLEANUP: Ensure NO labels remain in the strings
+        refined_q = re.sub(r"(?i)^REFINED_QUESTION\s*[:*-]+\s*", "", refined_q)
+        gen_answer = re.sub(r"(?i)^ANSWER\s*[:*-]+\s*", "", gen_answer)
+        
+        return {
+            "refined_question": refined_q.strip('"`* \n'),
+            "generated_answer": gen_answer.strip('"`* \n')
+        }
 
     except Exception as e:
         print(f"Text Parse Error in Preview: {e}")
@@ -595,48 +668,93 @@ def generate_refined_answer_preview(question, context=None):
 
 def extract_claims_with_llm(text):
     """
-    Uses an LLM to split text into atomic, self-contained claims.
-    CRITICAL: Resolves pronouns (e.g., "It" -> "Ginger") to ensure context is preserved.
+    Consolidated function to split text into claims.
+    Uses Flan-T5 by default (User request) with fallback to NLTK and LLM.
     """
-    print(f"DEBUG: Extracting claims with LLM for context-aware resolution...")
+    return extract_atomic_claims(text)
+
+def extract_atomic_claims(text):
+    """
+    Uses T5 to split complex text into individual atomic medical claims.
+    Reliant on refined input text for pronoun resolution.
+    """
+    claims = []
     
-    prompt = (
-        "You are an expert medical text analyst. Your task is to split the following text into individual, atomic claims.\n"
-        "RULES:\n"
-        "1. SPLIT complex sentences into single facts.\n"
-        "2. RESOLVE PRONOUNS: Replace 'It', 'He', 'They', 'This method' with the specific noun they refer to.\n"
-        "   - Example Input: 'Ginger is a root. It treats nausea.'\n"
-        "   - Example Output: 'Ginger is a root.' <SEP> 'Ginger treats nausea.'\n"
-        "3. MAKE CLAIMS SELF-CONTAINED: Every claim MUST have the full medical subject name in it.\n"
-        "4. IGNORE questions or conversational filler.\n"
-        "5. OUTPUT FORMAT: Join claims with <SEP>.\n\n"
-        f"TEXT: \"{text}\"\n\n"
-        "ATOMIC CLAIMS (joined by <SEP>):"
-    )
-    
-    response_text = call_free_llm_with_fallback(prompt, max_tokens=600)
-    
-    if not response_text or response_text == "RATE_LIMIT_HIT":
-        print("DEBUG: Extraction LLM failed. Returning original text as single claim.")
-        return [text]
+    # 1. Try Flan-T5 (High Priority)
+    if t5_model and t5_tokenizer:
+        try:
+            # Enhanced prompt for Flan-T5 splitting
+            prompt = (
+                f"Break the following medical text into a list of short, atomic facts. "
+                f"Use <SEP> between each fact.\n"
+                f"Text: {text}\n"
+                f"Facts:"
+            )
+            
+            inputs = t5_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512).to(DEVICE)
+            
+            with torch.no_grad():
+                outputs = t5_model.generate(
+                    **inputs, 
+                    max_length=512, 
+                    num_beams=4, 
+                    early_stopping=True
+                )
+                
+            generated_text = t5_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Robust split
+            if "<SEP>" in generated_text:
+                claims = [c.strip() for c in generated_text.split("<SEP>") if len(c.strip()) > 5]
+            else:
+                # Heuristic split by common patterns if <SEP> is missing
+                claims = [c.strip() for c in re.split(r'\d+\.|\*|\n|-', generated_text) if len(c.strip()) > 5]
+            
+            # If T5 returned a summary or truncated significantly, it's not a success
+            if len(claims) <= 1 and len(text.split('.')) > 1:
+                claims = []
+                
+        except Exception as e:
+            print(f"DEBUG: Flan-T5 generation failed ({e}). Falling back.")
+
+    # 2. Try LLM Splitting (If T5 failed)
+    if not claims:
+        print("DEBUG: Using LLM for claim extraction (Fallback)...")
+        prompt = (
+            "You are an expert medical text analyst. Your task is to split the following text into individual, atomic claims.\n"
+            "RULES:\n"
+            "1. SPLIT complex sentences into single facts.\n"
+            "2. RESOLVE PRONOUNS: Replace 'It', 'He', 'They', 'This method' with the specific noun they refer to.\n"
+            "3. MAKE CLAIMS SELF-CONTAINED: Every claim MUST have the full medical subject name in it.\n"
+            "4. OUTPUT FORMAT: Join claims with <SEP>.\n\n"
+            f"TEXT: \"{text}\"\n\n"
+            "ATOMIC CLAIMS (joined by <SEP>):"
+        )
         
-    # Clean and split
-    # Remove any preamble LLM might output
-    if ":" in response_text and "<SEP>" not in response_text[:20]:
-         # Try to find where the claims start
-         parts = response_text.split(":")
-         if len(parts) > 1:
-             response_text = parts[-1] 
-             
-    raw_claims = response_text.replace("ATOMIC CLAIMS:", "").replace("\n", "").split("<SEP>")
-    
-    # Filter empty or too short
-    claims = [c.strip() for c in raw_claims if len(c.strip()) > 5]
-    
-    # Fallback if splitting failed but response exists
-    if not claims and len(response_text) > 5:
-        return [response_text.strip()]
-    elif not claims:
-        return [text]
-        
-    return claims
+        try:
+            response_text = call_free_llm_with_fallback(prompt, max_tokens=600)
+            if response_text and "RATE_LIMIT" not in response_text:
+                 # Extract after any label LLM might provide
+                 if ":" in response_text and "<SEP>" not in response_text[:30]:
+                     response_text = response_text.split(":", 1)[-1]
+                 claims = [c.strip() for c in response_text.split("<SEP>") if len(c.strip()) > 5]
+        except:
+            pass
+
+    # 3. Final Fallback: Sentence Tokenization (NLTK)
+    if not claims:
+        print("DEBUG: Using NLTK for claim extraction (Final Fallback)...")
+        try:
+            import nltk
+            from nltk.tokenize import sent_tokenize
+            try:
+                nltk.data.find('tokenizers/punkt')
+            except:
+                nltk.download('punkt', quiet=True)
+            
+            claims = [s.strip() for s in sent_tokenize(text) if len(s.strip()) > 10]
+        except:
+             # Split by period and newline
+             claims = [s.strip() for s in re.split(r'\.|\n', text) if len(s.strip()) > 10]
+            
+    return claims or [text]

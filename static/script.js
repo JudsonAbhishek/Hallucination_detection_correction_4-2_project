@@ -193,22 +193,28 @@ document.addEventListener("DOMContentLoaded", function () {
 
         if (mode === 'generate') {
             refinementTitle.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Review Refined Question';
-            refinementSubtitle.textContent = `Refined Question: "${data.refined_question}"`;
+            // Show the question more prominently
+            refinementSubtitle.innerHTML = `<strong>Refined Question:</strong> "${data.refined_question}"`;
 
             // Update Label for Mode 1
             refinedLabel.innerHTML = '<i class="fa-solid fa-robot"></i> LLM Answer Is...';
 
             refinedInput.value = data.generated_answer;
+            refinedInput.rows = 12; // Show more answer
             currentRefinedQuestion = data.refined_question;
 
         } else {
             refinementTitle.innerHTML = '<i class="fa-solid fa-spell-check"></i> Review Refined Text';
-            refinementSubtitle.textContent = `Refined Text: "${data.refined_text.substring(0, 80)}..."`;
+            
+            // Shorten preview text if too long
+            const truncatedText = data.refined_text.length > 120 ? data.refined_text.substring(0, 120) + "..." : data.refined_text;
+            refinementSubtitle.innerHTML = `<strong>Refined Text:</strong> "${truncatedText}"`;
 
             // Update Label for Mode 2
             refinedLabel.innerHTML = '<i class="fa-solid fa-robot"></i> LLM Corrected Text';
 
             refinedInput.value = data.refined_text;
+            refinedInput.rows = 12; // Show more text
             currentRefinedText = data.refined_text;
         }
     }
@@ -375,7 +381,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 </button>
                 <div class="evidence-content hidden">
                     <ul>
-                        ${claim.evidence.slice(0, 3).map(e => `<li>${e}</li>`).join('')}
+                        ${claim.evidence.map(e => `<li>${e}</li>`).join('')}
                     </ul>
                 </div>
             </div>`;

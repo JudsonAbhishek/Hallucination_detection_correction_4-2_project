@@ -140,7 +140,7 @@ header {
 .subtitle {
     font-size: 1.125rem;
     color: var(--slate-500);
-    max-width: 600px;
+    max-width: 900px;
     margin: 0 auto;
 }
 
