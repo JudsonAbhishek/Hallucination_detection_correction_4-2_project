@@ -205,7 +205,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
         } else {
             refinementTitle.innerHTML = '<i class="fa-solid fa-spell-check"></i> Review Refined Text';
-            
+
             // Shorten preview text if too long
             const truncatedText = data.refined_text.length > 120 ? data.refined_text.substring(0, 120) + "..." : data.refined_text;
             refinementSubtitle.innerHTML = `<strong>Refined Text:</strong> "${truncatedText}"`;
@@ -280,14 +280,11 @@ document.addEventListener("DOMContentLoaded", function () {
         // 2. Stats
         const total = data.claims ? data.claims.length : 0;
         const verified = data.claims ? data.claims.filter(c => c.verification_status === "Verified").length : 0;
-        const hallucinated = data.claims ? data.claims.filter(c => c.verification_status === "Hallucinated").length : 0;
-        const missing = data.claims ? data.claims.filter(c => c.verification_status === "Evidence Not Found").length : 0;
+        const contradicted = data.claims ? data.claims.filter(c => c.verification_status === "Contradicted" || c.verification_status === "Hallucinated").length : 0;
+        const missing = data.claims ? data.claims.filter(c => c.verification_status === "Insufficient Evidence" || c.verification_status === "Evidence Not Found").length : 0;
 
         animateValue(totalClaimsEl, 0, total, 1000);
         animateValue(verifiedCountEl, 0, verified, 1000);
-
-        // Handle both 'Contradicted' and legacy 'Hallucinated' counts
-        const contradicted = data.claims ? data.claims.filter(c => c.verification_status === "Contradicted" || c.verification_status === "Hallucinated").length : 0;
         animateValue(hallucinatedCountEl, 0, contradicted, 1000);
         animateValue(missingCountEl, 0, missing, 1000);
 

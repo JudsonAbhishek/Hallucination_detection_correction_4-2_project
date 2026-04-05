@@ -40,7 +40,7 @@ PROMPT_MODE_1_QA = (
     "- Use medical terminology correctly.\n\n"
     "OUTPUT FORMAT (STRICT):\n"
     "REFINED_QUESTION: [Professional research-grade version of the input]\n"
-    "ANSWER: [A detailed, one paragraph factual answer with 5-6 sentences. Ensure every detected hallucination or high-risk claim in the input is directly clarified with evidence-based corrections.]\n\n"
+    "ANSWER: [A detailed, one paragraph factual answer with 5-6 sentences. NO REFERENCES SECTION. NO LIST OF CITATIONS. JUST THE TEXT PARA.]\n\n"
     "CONTEXT: {context_str}\n"
     "INPUT: {question}\n"
 )
@@ -675,86 +675,47 @@ def extract_claims_with_llm(text):
 
 def extract_atomic_claims(text):
     """
-    Uses T5 to split complex text into individual atomic medical claims.
-    Reliant on refined input text for pronoun resolution.
+    STRICT FLAN-T5 MODE: Only uses Flan-T5 for atomic claim division.
+    Ensures no data loss by using sentence tokenization as a base.
     """
-    claims = []
+    import nltk
+    from nltk.tokenize import sent_tokenize
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except:
+        nltk.download('punkt', quiet=True)
+
+    # 1. Initial Sentence split to prevent T5 truncation
+    try:
+        raw_sentences = [s.strip() for s in sent_tokenize(text) if len(s.strip()) > 8]
+    except:
+        raw_sentences = [s.strip() for s in text.split('.') if len(s.strip()) > 8]
+
+    if not raw_sentences:
+        return [text]
+
+    final_claims = []
     
-    # 1. Try Flan-T5 (High Priority)
-    if t5_model and t5_tokenizer:
-        try:
-            # Enhanced prompt for Flan-T5 splitting
-            prompt = (
-                f"Break the following medical text into a list of short, atomic facts. "
-                f"Use <SEP> between each fact.\n"
-                f"Text: {text}\n"
-                f"Facts:"
-            )
-            
-            inputs = t5_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512).to(DEVICE)
-            
-            with torch.no_grad():
-                outputs = t5_model.generate(
-                    **inputs, 
-                    max_length=512, 
-                    num_beams=4, 
-                    early_stopping=True
-                )
-                
-            generated_text = t5_tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Robust split
-            if "<SEP>" in generated_text:
-                claims = [c.strip() for c in generated_text.split("<SEP>") if len(c.strip()) > 5]
-            else:
-                # Heuristic split by common patterns if <SEP> is missing
-                claims = [c.strip() for c in re.split(r'\d+\.|\*|\n|-', generated_text) if len(c.strip()) > 5]
-            
-            # If T5 returned a summary or truncated significantly, it's not a success
-            if len(claims) <= 1 and len(text.split('.')) > 1:
-                claims = []
-                
-        except Exception as e:
-            print(f"DEBUG: Flan-T5 generation failed ({e}). Falling back.")
-
-    # 2. Try LLM Splitting (If T5 failed)
-    if not claims:
-        print("DEBUG: Using LLM for claim extraction (Fallback)...")
-        prompt = (
-            "You are an expert medical text analyst. Your task is to split the following text into individual, atomic claims.\n"
-            "RULES:\n"
-            "1. SPLIT complex sentences into single facts.\n"
-            "2. RESOLVE PRONOUNS: Replace 'It', 'He', 'They', 'This method' with the specific noun they refer to.\n"
-            "3. MAKE CLAIMS SELF-CONTAINED: Every claim MUST have the full medical subject name in it.\n"
-            "4. OUTPUT FORMAT: Join claims with <SEP>.\n\n"
-            f"TEXT: \"{text}\"\n\n"
-            "ATOMIC CLAIMS (joined by <SEP>):"
-        )
+    # 2. Process each sentence with Flan-T5 ONLY
+    for sentence in raw_sentences:
+        atomized = []
         
-        try:
-            response_text = call_free_llm_with_fallback(prompt, max_tokens=600)
-            if response_text and "RATE_LIMIT" not in response_text:
-                 # Extract after any label LLM might provide
-                 if ":" in response_text and "<SEP>" not in response_text[:30]:
-                     response_text = response_text.split(":", 1)[-1]
-                 claims = [c.strip() for c in response_text.split("<SEP>") if len(c.strip()) > 5]
-        except:
-            pass
-
-    # 3. Final Fallback: Sentence Tokenization (NLTK)
-    if not claims:
-        print("DEBUG: Using NLTK for claim extraction (Final Fallback)...")
-        try:
-            import nltk
-            from nltk.tokenize import sent_tokenize
+        if t5_model and t5_tokenizer:
             try:
-                nltk.data.find('tokenizers/punkt')
+                prompt = f"Split this medical statement into short, independent facts. Use <SEP> between facts: {sentence}"
+                inputs = t5_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=256).to(DEVICE)
+                with torch.no_grad():
+                    outputs = t5_model.generate(**inputs, max_length=256)
+                gen_text = t5_tokenizer.decode(outputs[0], skip_special_tokens=True)
+                
+                if "<SEP>" in gen_text:
+                    atomized = [c.strip() for c in gen_text.split("<SEP>") if len(c.strip()) > 5]
             except:
-                nltk.download('punkt', quiet=True)
+                pass
+                
+        if atomized:
+            final_claims.extend(atomized)
+        else:
+            final_claims.append(sentence)
             
-            claims = [s.strip() for s in sent_tokenize(text) if len(s.strip()) > 10]
-        except:
-             # Split by period and newline
-             claims = [s.strip() for s in re.split(r'\.|\n', text) if len(s.strip()) > 10]
-            
-    return claims or [text]
+    return final_claims

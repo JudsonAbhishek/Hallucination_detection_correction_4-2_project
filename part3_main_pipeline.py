@@ -78,49 +78,44 @@ except Exception as e:
 # -------------------------------
 def extract_atomic_claims(text):
     """
-    Uses T5 to split complex text into individual atomic medical claims.
-    Improved with robust splitting to prevent single-claim summaries.
+    STRICT FLAN-T5 MODE: Only uses Flan-T5 for atomic claim division.
+    Uses sentence tokenization first to prevent truncation, then divides each sentence with T5.
     """
-    claims = []
-    if t5_model and t5_tokenizer:
-        try:
-            # Enhanced prompt for cleaner splitting
-            prompt = (
-                f"Break the following medical text into a list of short, atomic facts. "
-                f"Use <SEP> between each fact.\n"
-                f"Text: {text}\n"
-                f"Facts:"
-            )
-            
-            inputs = t5_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512).to(DEVICE)
-            with torch.no_grad():
-                outputs = t5_model.generate(
-                    **inputs, 
-                    max_length=512, 
-                    num_beams=4, 
-                    early_stopping=True
-                )
-                
-            generated_text = t5_tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            if "<SEP>" in generated_text:
-                claims = [c.strip() for c in generated_text.split("<SEP>") if len(c.strip()) > 5]
-            else:
-                claims = [c.strip() for c in re.split(r'\.|\n|\*|-', generated_text) if len(c.strip()) > 5]
-            
-            # Robust check: If result is too short, fall back
-            if len(claims) <= 1 and len(text.split('.')) > 1:
-                claims = []
-        except Exception as e:
-            print(f"DEBUG: T5 generation failed ({e}). Falling back.")
+    raw_sentences = []
+    try:
+        raw_sentences = [s.strip() for s in sent_tokenize(text) if is_valid_medical_claim(s)]
+    except Exception:
+        raw_sentences = [s.strip() for s in re.split(r'\.|\n', text) if is_valid_medical_claim(s)]
 
-    if not claims:
-        try:
-            claims = [s.strip() for s in sent_tokenize(text) if is_valid_medical_claim(s)]
-        except Exception:
-            claims = [s.strip() for s in text.split(".") if len(s.strip()) > 10]
+    if not raw_sentences:
+        return [text] if is_valid_medical_claim(text) else []
+
+    final_claims = []
+    
+    for sentence in raw_sentences:
+        atomized = []
+        
+        # USE FLAN-T5 ONLY for atomization
+        if t5_model and t5_tokenizer:
+            try:
+                # Optimized prompt for Flan-T5 division
+                prompt = f"Split this medical statement into short, independent facts. Use <SEP> between facts: {sentence}"
+                inputs = t5_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=256).to(DEVICE)
+                with torch.no_grad():
+                    outputs = t5_model.generate(**inputs, max_length=256)
+                gen_text = t5_tokenizer.decode(outputs[0], skip_special_tokens=True)
+                
+                if "<SEP>" in gen_text:
+                    atomized = [c.strip() for c in gen_text.split("<SEP>") if len(c.strip()) > 5]
+            except:
+                pass
             
-    return claims
+        if atomized:
+            final_claims.extend(atomized)
+        else:
+            final_claims.append(sentence)
+            
+    return final_claims
 
 # -------------------------------
 # CORE VERIFICATION ENGINE
